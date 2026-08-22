@@ -375,18 +375,20 @@ class GhostChainsGraph {
       removed: false,
     };
 
-    // Self-loops are a degenerate case: repeating/looping on the same node
-    // doesn't create a new path, so treat as low-signal and skip structural
-    // analysis entirely.
-    if (tx.from === tx.to) {
-      this._commitEdge(edge);
-      return clamp(BASE, 0, 1);
-    }
+    // Self-loops are a degenerate case for *structural* analysis: repeating
+    // on the same node doesn't create a new path, so extension/convergence/
+    // cycle/loop signals are skipped. Identity and value evidence are still
+    // meaningful on a self-loop (funds round-tripping through one node on a
+    // different device, or at a wildly different amount, is itself a
+    // plausible evasion pattern) so those signals still run.
+    const isSelfLoop = tx.from === tx.to;
 
-    const extensionSignal = this._hasActiveEdges(tx.from) || this._hasActiveEdges(tx.to) ? 1 : 0;
-    const ancestorsOfU = this._bfsBackwardAncestors(tx.from);
-    const convergenceCount = this._countConvergingPaths(tx.to, tx.from, ancestorsOfU);
-    const { found: cycleClosed, independentPathCount } = this._reachesBackInfo(tx.to, tx.from);
+    const extensionSignal = !isSelfLoop && (this._hasActiveEdges(tx.from) || this._hasActiveEdges(tx.to)) ? 1 : 0;
+    const ancestorsOfU = isSelfLoop ? new Set() : this._bfsBackwardAncestors(tx.from);
+    const convergenceCount = isSelfLoop ? 0 : this._countConvergingPaths(tx.to, tx.from, ancestorsOfU);
+    const { found: cycleClosed, independentPathCount } = isSelfLoop
+      ? { found: false, independentPathCount: 0 }
+      : this._reachesBackInfo(tx.to, tx.from);
 
     let identityRaw = 0;
     for (const dim of IDENTITY_DIMENSIONS) {
