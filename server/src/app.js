@@ -6,6 +6,7 @@ const morgan = require("morgan");
 const routes = require("./routes");
 const { solve } = require("./controllers/adaptiveGatewayController");
 const { kanCheongDeliveryDriver } = require("./controllers/kanCheongController");
+const { move: showdownMove, health: showdownHealth } = require("./controllers/showdownController");
 const ghostChainsRoutes = require("./routes/ghostChainsRoutes");
 const { handleMcp } = require("./mcp/mcpHandler");
 const notFound = require("./middleware/notFound");
@@ -28,6 +29,8 @@ if (process.env.NODE_ENV !== "test") {
 app.post("/solve", solve);
 app.post("/kan-cheong-delivery-driver", kanCheongDeliveryDriver);
 app.use("/ghost-chains", ghostChainsRoutes);
+app.post("/move", showdownMove);
+app.get("/health", showdownHealth);
 app.post("/mcp", handleMcp);
 app.post("/mcp/", handleMcp);
 app.use("/api", routes);
