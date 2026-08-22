@@ -4,6 +4,7 @@ const helmet = require("helmet");
 const morgan = require("morgan");
 
 const routes = require("./routes");
+const { solve } = require("./controllers/adaptiveGatewayController");
 const notFound = require("./middleware/notFound");
 const errorHandler = require("./middleware/errorHandler");
 
@@ -21,6 +22,7 @@ if (process.env.NODE_ENV !== "test") {
 }
 
 // Routes
+app.post("/solve", solve);  // challenge-required root endpoint
 app.use("/api", routes);
 
 // 404 & error handling must come last
