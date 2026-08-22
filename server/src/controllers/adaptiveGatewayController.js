@@ -47,13 +47,15 @@ function transform(adaptInput) {
 
 function computeSlo(heartbeats, sloQuery) {
   if (!Array.isArray(heartbeats) || !sloQuery) return null;
+  const since = Number(sloQuery.since);
   const filtered = heartbeats.filter(
-    (h) => h.service === sloQuery.service && h.timestamp >= sloQuery.since
+    (h) => h.service === sloQuery.service && Number(h.timestamp) >= since
   );
   if (filtered.length === 0) return { availability: null, p95LatencyMs: null };
-  const availability = filtered.filter((h) => h.status === "OK").length / filtered.length;
-  const sorted = filtered.map((h) => h.latencyMs).sort((a, b) => a - b);
-  const p95LatencyMs = sorted[Math.ceil(0.95 * sorted.length) - 1];
+  const okCount = filtered.filter((h) => h.status === "OK").length;
+  const availability = okCount / filtered.length;
+  const latencies = filtered.map((h) => Number(h.latencyMs)).sort((a, b) => a - b);
+  const p95LatencyMs = latencies[Math.ceil(0.95 * latencies.length) - 1];
   return { availability, p95LatencyMs };
 }
 
