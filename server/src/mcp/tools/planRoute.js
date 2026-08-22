@@ -152,20 +152,20 @@ function boundedDijkstra(adjacency, tolls, source, target, maxHops) {
 
 function register(server) {
   server.registerTool(
-    "plan_route",
+    "go",
     {
       description:
-        "Returns the next node to travel to on the way from your current position to a " +
-        "destination, on a weighted map identified by map_id. Cost is edge weight plus " +
+        "Returns the next node to travel to on the way from your current position (source) " +
+        "to a destination, on a weighted map identified by map_id. Cost is edge weight plus " +
         "the toll of every node entered; this tool always returns the least-cost route. " +
-        "If you have a limited number of hops left, pass hopsRemaining (counting the hop " +
+        "If you have a limited number of hops left, pass hops_remaining (counting the hop " +
         "you're about to take) and it will find the cheapest route that still fits. " +
-        "Call again after each move, passing your new current node.",
+        "Call again after each move, passing your new current node as source.",
       inputSchema: {
-        mapId: z.string().describe("Opaque handle identifying the map"),
-        current: z.string().describe("The node you are currently standing at"),
+        map_id: z.string().describe("Opaque handle identifying the map"),
+        source: z.string().describe("The node you are currently standing at"),
         destination: z.string().describe("The node you need to reach"),
-        hopsRemaining: z
+        hops_remaining: z
           .number()
           .int()
           .positive()
@@ -174,13 +174,13 @@ function register(server) {
             "If this journey has a hop curfew, the number of edges you may still use, " +
               "including the one you're about to take. Omit if there is no limit."
           ),
-        graphUrl: z
+        graph_url: z
           .string()
           .optional()
           .describe("Override: full URL to fetch the graph from, if not using the default map service"),
       },
     },
-    async ({ mapId, current, destination, hopsRemaining, graphUrl }) => {
+    async ({ map_id: mapId, source: current, destination, hops_remaining: hopsRemaining, graph_url: graphUrl }) => {
       let graph;
       try {
         graph = await fetchGraph(mapId, graphUrl);

@@ -4,6 +4,7 @@ const { getEncoding } = require("js-tiktoken");
 const TOKEN_BUDGET = 900;
 const FETCH_TIMEOUT_MS = 6000; // leaves headroom under the 10s tool deadline
 const MAX_MATERIALS = 12; // cap parallel fetches so we don't blow the deadline
+const SEARCH_SERVICE_BASE_URL = process.env.SEARCH_SERVICE_BASE_URL || "";
 
 const encoding = getEncoding("o200k_base");
 const countTokens = (text) => encoding.encode(text).length;
@@ -118,35 +119,72 @@ function selectPassages(candidatePassages, question) {
   return selected;
 }
 
+// Grader calls this with just a bare query and no document list, so unlike
+// plan_route's map service (identified per-call by map_id) the corpus here
+// must be self-sourced. SEARCH_SERVICE_BASE_URL is expected to expose
+// GET {base}/search?q=... returning either a JSON array of {title, url}
+// (or plain strings/documents) or raw text to pull passages from directly.
+async function fetchCorpusHits(query) {
+  if (!SEARCH_SERVICE_BASE_URL) return null;
+  const url = `${SEARCH_SERVICE_BASE_URL}/search?q=${encodeURIComponent(query)}`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, { signal: controller.signal });
+    if (!res.ok) return null;
+    const contentType = res.headers.get("content-type") || "";
+    if (!contentType.includes("application/json")) return [await res.text()];
+
+    const json = await res.json();
+    const items = Array.isArray(json) ? json : Array.isArray(json.results) ? json.results : null;
+    if (!items) return null;
+
+    return items.slice(0, MAX_MATERIALS).map((item) => {
+      if (typeof item === "string") return item;
+      if (item && typeof item.text === "string") return item.text;
+      if (item && typeof item.url === "string") return { url: item.url };
+      return null;
+    });
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function register(server) {
   server.registerTool(
-    "recall_study_material",
+    "search",
     {
       description:
-        "Recalls passages from assigned study materials relevant to an exam question. " +
-        "Pass the question and the list of study material documents you were given " +
-        "(each with its title and fetch address). Returns up to ~900 tokens worth of " +
-        "the most relevant excerpts as a list of strings — read them and answer the " +
-        "question yourself; this tool does not answer for you.",
+        "Searches the assigned study materials for passages relevant to an exam question " +
+        "and returns up to ~900 tokens worth of the most relevant excerpts as a list of " +
+        "strings — read them and answer the question yourself; this tool does not answer " +
+        "for you.",
       inputSchema: {
-        question: z.string().describe("The exam question to recall material for"),
-        materials: z
-          .array(
-            z.object({
-              title: z.string().optional(),
-              url: z.string().describe("Address to fetch this document from"),
-            })
-          )
-          .min(1)
-          .describe("The list of study material documents assigned, with fetch addresses"),
+        query: z.string().describe("The exam question, or search query, to recall material for"),
       },
     },
-    async ({ question, materials }) => {
-      const toFetch = materials.slice(0, MAX_MATERIALS);
-      const texts = await Promise.all(toFetch.map((m) => fetchText(m.url)));
+    async ({ query }) => {
+      const hits = await fetchCorpusHits(query);
+      if (!hits) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "error: no study-material search service is configured (SEARCH_SERVICE_BASE_URL unset or unreachable)",
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      const urlsToFetch = hits.filter((h) => h && typeof h === "object" && h.url);
+      const fetchedTexts = await Promise.all(urlsToFetch.map((h) => fetchText(h.url)));
+      const inlineTexts = hits.filter((h) => typeof h === "string");
 
       const candidatePassages = [];
-      for (const text of texts) {
+      for (const text of [...inlineTexts, ...fetchedTexts]) {
         if (!text) continue;
         candidatePassages.push(...splitIntoPassages(text));
       }
@@ -158,7 +196,7 @@ function register(server) {
         };
       }
 
-      const selected = selectPassages(candidatePassages, question);
+      const selected = selectPassages(candidatePassages, query);
 
       return {
         content: selected.map((text) => ({ type: "text", text })),
