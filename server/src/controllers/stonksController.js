@@ -7,157 +7,73 @@ function maxDepth(energy) {
   return Math.floor(energy / 2);
 }
 
-// Selling never costs capital or energy, so for any bought unit the best
-// possible sell is simply the highest price for that stock anywhere within
-// reach — there's no benefit to ever selling for less.
-function buildTradeItems(timeline, minYear) {
-  const years = Object.keys(timeline)
-    .map(Number)
-    .filter((y) => Number.isInteger(y) && y >= minYear && y <= CURRENT_YEAR);
-
-  const best = new Map(); // stock -> { price, year }
-  for (const year of years) {
-    for (const [stock, info] of Object.entries(timeline[year] ?? timeline[String(year)] ?? {})) {
-      if (!info || !(info.price > 0)) continue;
-      const current = best.get(stock);
-      if (!current || info.price > current.price) best.set(stock, { price: info.price, year });
-    }
+// The trip is a single there-and-back walk: descend from 2037 to the deepest
+// reachable year, then ascend back. Every year in between is visited twice
+// (once each direction) except the turnaround point.
+function buildPath(timeline, minYear) {
+  const years = new Set([CURRENT_YEAR]);
+  for (const key of Object.keys(timeline)) {
+    const y = Number(key);
+    if (Number.isInteger(y) && y >= minYear && y <= CURRENT_YEAR) years.add(y);
   }
-
-  const items = [];
-  for (const year of years) {
-    for (const [stock, info] of Object.entries(timeline[year] ?? timeline[String(year)] ?? {})) {
-      if (!info || !(info.price > 0) || !(info.qty > 0)) continue;
-      const target = best.get(stock);
-      if (!target || target.year === year) continue;
-      const profitPerUnit = target.price - info.price;
-      if (profitPerUnit <= 0) continue;
-      items.push({
-        year,
-        stock,
-        price: info.price,
-        qty: Math.floor(info.qty),
-        profitPerUnit,
-        sellYear: target.year,
-      });
-    }
-  }
-  return items;
+  const descending = [...years].sort((a, b) => b - a);
+  const ascending = [...descending].reverse();
+  return descending.concat(ascending.slice(1)); // turnaround year isn't repeated
 }
 
-function expandToChunks(items) {
-  const chunks = [];
-  items.forEach((item, itemIdx) => {
-    let remaining = item.qty;
-    let size = 1;
-    while (remaining > 0) {
-      const take = Math.min(size, remaining);
-      chunks.push({ itemIdx, qty: take, cost: take * item.price, profit: take * item.profitPerUnit });
-      remaining -= take;
-      size *= 2;
-    }
-  });
-  return chunks;
+function priceAt(timeline, year, stock) {
+  const stocks = timeline[year] ?? timeline[String(year)];
+  const info = stocks && stocks[stock];
+  return info && info.price > 0 ? info.price : undefined;
 }
 
-// ponytail: exact 0/1 knapsack via DP; degrades to a profit/cost greedy when
-// the DP table would be huge, so a pathological capital can't hang the request.
-function greedyPick(items, capital) {
-  const byRatio = [...items].sort((a, b) => b.profitPerUnit / b.price - a.profitPerUnit / a.price);
-  let remaining = capital;
-  const picked = [];
-  for (const item of byRatio) {
-    if (remaining <= 0) break;
-    const qty = Math.min(item.qty, Math.floor(remaining / item.price));
-    if (qty > 0) {
-      picked.push({ ...item, qty });
-      remaining -= qty * item.price;
+// A unit bought at position t is only worth buying if some later stop sells
+// higher; suffixMax[t] is the best price strictly after t, suffixPos[t] the
+// earliest position achieving it (selling at the first tie frees capital
+// sooner for reuse elsewhere in the same trip — a strictly better outcome
+// than waiting for a later tie).
+function buildSuffix(path, timeline, stock) {
+  const n = path.length;
+  const max = new Array(n + 1).fill(-Infinity);
+  const pos = new Array(n + 1).fill(-1);
+  for (let t = n - 1; t >= 0; t--) {
+    const p = priceAt(timeline, path[t], stock);
+    if (p !== undefined && p >= max[t + 1]) {
+      max[t] = p;
+      pos[t] = t;
+    } else {
+      max[t] = max[t + 1];
+      pos[t] = pos[t + 1];
     }
   }
-  return picked;
+  return { max, pos };
 }
 
-function pickPurchases(items, capital) {
-  const cap = Math.max(0, Math.floor(capital));
-  if (items.length === 0 || cap === 0) return [];
-
-  const chunks = expandToChunks(items);
-  if (chunks.length * cap > 5_000_000) return greedyPick(items, cap);
-
-  const n = chunks.length;
-  const dp = new Float64Array(cap + 1);
-  const taken = new Uint8Array(n * (cap + 1));
-  for (let i = 0; i < n; i++) {
-    const { cost, profit } = chunks[i];
-    const row = i * (cap + 1);
-    for (let w = cap; w >= cost; w--) {
-      const candidate = dp[w - cost] + profit;
-      if (candidate > dp[w]) {
-        dp[w] = candidate;
-        taken[row + w] = 1;
+// Capital is one shared pool: buying at t and selling at t' ties up `cost` of
+// it for the whole [t, t') window. Multiple such windows can overlap (from
+// different stocks/years), so before committing a candidate we need the
+// worst-case capital already committed anywhere in its window — a difference
+// array over "committed cost per position", rebuilt to a prefix sum on query.
+function makeCapitalLedger(length, capital) {
+  const delta = new Array(length + 1).fill(0);
+  return {
+    maxCommittedIn(lo, hi) {
+      let running = 0;
+      let best = 0;
+      for (let t = 0; t < hi; t++) {
+        running += delta[t];
+        if (t >= lo) best = Math.max(best, running);
       }
-    }
-  }
-
-  const qtyByItem = new Map();
-  let w = cap;
-  for (let i = n - 1; i >= 0; i--) {
-    if (taken[i * (cap + 1) + w]) {
-      const c = chunks[i];
-      qtyByItem.set(c.itemIdx, (qtyByItem.get(c.itemIdx) || 0) + c.qty);
-      w -= c.cost;
-    }
-  }
-
-  const picked = [];
-  for (const [idx, qty] of qtyByItem.entries()) {
-    if (qty > 0) picked.push({ ...items[idx], qty });
-  }
-  return picked;
-}
-
-function buildActions(purchases) {
-  if (purchases.length === 0) return [];
-
-  const allYears = new Set();
-  for (const p of purchases) {
-    allYears.add(p.year);
-    allYears.add(p.sellYear);
-  }
-  const descOrder = [...allYears].sort((a, b) => b - a);
-  const ascOrder = [...descOrder].reverse();
-
-  const buysByYear = new Map();
-  const sellsByYear = new Map();
-  for (const p of purchases) {
-    if (!buysByYear.has(p.year)) buysByYear.set(p.year, []);
-    buysByYear.get(p.year).push(p);
-    if (!sellsByYear.has(p.sellYear)) sellsByYear.set(p.sellYear, []);
-    sellsByYear.get(p.sellYear).push(p);
-  }
-
-  const actions = [];
-  let cursor = CURRENT_YEAR;
-
-  for (const year of descOrder) {
-    if (year !== cursor) {
-      actions.push(`j-${cursor}-${year}`);
-      cursor = year;
-    }
-    for (const p of buysByYear.get(year) || []) actions.push(`b-${p.stock}-${p.qty}`);
-  }
-
-  for (const year of ascOrder) {
-    if (year !== cursor) {
-      actions.push(`j-${cursor}-${year}`);
-      cursor = year;
-    }
-    for (const p of sellsByYear.get(year) || []) actions.push(`s-${p.stock}-${p.qty}`);
-  }
-
-  if (cursor !== CURRENT_YEAR) actions.push(`j-${cursor}-${CURRENT_YEAR}`);
-
-  return actions;
+      return best;
+    },
+    commit(lo, hi, cost) {
+      delta[lo] += cost;
+      delta[hi] -= cost;
+    },
+    room(lo, hi) {
+      return capital - this.maxCommittedIn(lo, hi);
+    },
+  };
 }
 
 function solveCase(testCase) {
@@ -167,14 +83,90 @@ function solveCase(testCase) {
   }
 
   const minYear = CURRENT_YEAR - maxDepth(energy);
-  const items = buildTradeItems(timeline, minYear);
-  const purchases = pickPurchases(items, capital);
-  return buildActions(purchases);
+  const path = buildPath(timeline, minYear);
+
+  const stocks = new Set();
+  for (const year of path) {
+    for (const name of Object.keys(timeline[year] ?? timeline[String(year)] ?? {})) stocks.add(name);
+  }
+
+  const suffixByStock = new Map();
+  for (const stock of stocks) suffixByStock.set(stock, buildSuffix(path, timeline, stock));
+
+  // One candidate per (year, stock): its first appearance in the path, since
+  // buying there is never worse than waiting for the year's second visit
+  // (strictly more future remains, so the achievable sell price only shrinks
+  // later) — buying earlier dominates, so the later visit adds nothing.
+  const seenYearStock = new Set();
+  const candidates = [];
+  for (let t = 0; t < path.length; t++) {
+    const year = path[t];
+    for (const stock of stocks) {
+      const key = `${year}|${stock}`;
+      if (seenYearStock.has(key)) continue;
+      const stocksAtYear = timeline[year] ?? timeline[String(year)] ?? {};
+      const info = stocksAtYear[stock];
+      if (!info || !(info.price > 0) || !(info.qty > 0)) continue;
+      seenYearStock.add(key);
+      const { max, pos } = suffixByStock.get(stock);
+      const sellPrice = max[t + 1];
+      if (sellPrice <= info.price) continue; // no profitable future sale
+      candidates.push({
+        stock,
+        buyT: t,
+        sellT: pos[t + 1],
+        price: info.price,
+        qty: Math.floor(info.qty),
+        sellPrice,
+      });
+    }
+  }
+
+  candidates.sort((a, b) => (b.sellPrice - b.price) / b.price - (a.sellPrice - a.price) / a.price);
+
+  const ledger = makeCapitalLedger(path.length, capital);
+  const actionsAt = path.map(() => []);
+  const sellQtyAt = new Map(); // `${sellT}|${stock}` -> qty, so repeat sells at one stop merge
+
+  for (const c of candidates) {
+    const room = ledger.room(c.buyT, c.sellT);
+    if (room <= 0) continue;
+    const qty = Math.min(c.qty, Math.floor(room / c.price));
+    if (qty <= 0) continue;
+
+    ledger.commit(c.buyT, c.sellT, qty * c.price);
+    actionsAt[c.buyT].push(`b-${c.stock}-${qty}`);
+
+    const sellKey = `${c.sellT}|${c.stock}`;
+    sellQtyAt.set(sellKey, (sellQtyAt.get(sellKey) || 0) + qty);
+  }
+
+  for (const [key, qty] of sellQtyAt.entries()) {
+    const [tStr, stock] = key.split("|");
+    actionsAt[Number(tStr)].push(`s-${stock}-${qty}`);
+  }
+
+  // Walk the path emitting only jumps between stops that actually have
+  // actions — skipping empty pass-through stops costs nothing (the jump
+  // distances telescope to the same total either way).
+  const actions = [];
+  let cursor = CURRENT_YEAR;
+  for (let t = 0; t < path.length; t++) {
+    if (actionsAt[t].length === 0) continue;
+    const year = path[t];
+    if (year !== cursor) {
+      actions.push(`j-${cursor}-${year}`);
+      cursor = year;
+    }
+    actions.push(...actionsAt[t]);
+  }
+  if (cursor !== CURRENT_YEAR) actions.push(`j-${cursor}-${CURRENT_YEAR}`);
+
+  return actions;
 }
 
 const solveStonks = (req, res, next) => {
   try {
-    console.log("[STONK_INPUT]", JSON.stringify(req.body));
     const cases = Array.isArray(req.body) ? req.body : [];
     const results = cases.map((testCase, idx) => {
       try {
@@ -184,10 +176,8 @@ const solveStonks = (req, res, next) => {
         return [];
       }
     });
-    console.log("[STONK_OUTPUT]", JSON.stringify(results));
     res.status(200).json(results);
   } catch (err) {
-    console.error("[STONK ERROR]", err.message);
     next(err);
   }
 };
