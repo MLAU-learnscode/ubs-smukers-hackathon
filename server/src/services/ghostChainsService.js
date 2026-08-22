@@ -412,7 +412,9 @@ class GhostChainsGraph {
   }
 
   // Validates, applies idempotency, scores, and commits a raw transaction
-  // payload. Throws an Error with `statusCode` set on invalid/conflicting input.
+  // payload. Throws an Error with `statusCode` set on invalid input. A
+  // conflicting duplicate (reused txId, different payload) is not an error —
+  // see the txId-reuse branch below.
   processTransaction(txRaw) {
     if (!txRaw || typeof txRaw !== "object") {
       const err = new Error("transaction must be an object");
@@ -453,9 +455,13 @@ class GhostChainsGraph {
       if (existing.payloadHash === payloadHash) {
         return { txId, riskScore: existing.riskScore };
       }
-      const err = new Error(`transaction ${txId}: duplicate txId with a different payload`);
-      err.statusCode = 409;
-      throw err;
+      // A reused txId with a *different* payload is not a harmless replay —
+      // it's a tampering/integrity signal in its own right (the one thing we
+      // know for certain is unique per spec is now colliding). Treat it as
+      // maximally suspicious rather than silently rescoring or rejecting the
+      // batch; graph state stays untouched either way (no new edge, no
+      // change to the original transaction's committed score).
+      return { txId, riskScore: 1 };
     }
 
     const riskScore = this.scoreAndCommit({ ...normalized, createdAt: nowMs });
