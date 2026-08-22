@@ -45,6 +45,18 @@ function transform(adaptInput) {
   };
 }
 
+function computeSlo(heartbeats, sloQuery) {
+  if (!Array.isArray(heartbeats) || !sloQuery) return null;
+  const filtered = heartbeats.filter(
+    (h) => h.service === sloQuery.service && h.timestamp >= sloQuery.since
+  );
+  if (filtered.length === 0) return { availability: null, p95LatencyMs: null };
+  const availability = filtered.filter((h) => h.status === "OK").length / filtered.length;
+  const sorted = filtered.map((h) => h.latencyMs).sort((a, b) => a - b);
+  const p95LatencyMs = sorted[Math.ceil(0.95 * sorted.length) - 1];
+  return { availability, p95LatencyMs };
+}
+
 const solve = (req, res, next) => {
   try {
     const { payload } = req.body;
@@ -63,7 +75,11 @@ const solve = (req, res, next) => {
       return next(err);
     }
 
-    res.status(200).json({ adaptOutput: transform(decoded.adaptInput) });
+    const response = { adaptOutput: transform(decoded.adaptInput) };
+    const sloOutput = computeSlo(decoded.heartbeats, decoded.sloQuery);
+    if (sloOutput !== null) response.sloOutput = sloOutput;
+
+    res.status(200).json(response);
   } catch (err) {
     next(err);
   }
