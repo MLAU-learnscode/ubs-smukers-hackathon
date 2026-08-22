@@ -157,10 +157,19 @@ const BLUFF_EQ_CEILING = 0.28;
 const BLUFF_FREQUENCY = 0.25;
 const CALL_MARGIN = 0.06;
 
+// The rating model can only learn table_rule from hands that reach showdown.
+// Folding based on an untrusted prior means we never see the very hands that
+// would correct it. So for the first few hands of a leg (few observed
+// showdowns), call down to a fixed equity floor instead of true pot odds —
+// buys information at a bounded cost until the model has enough evidence.
+const EXPLORATION_HANDS = 8;
+const EXPLORATION_CALL_FLOOR = 0.35;
+
 function decide(state) {
   const legal = new Set(state.legal_actions || []);
   const eq = equityForState(state);
   const toCall = state.to_call || 0;
+  const exploring = state.phase !== 1 && (state.recent_hands || []).length < EXPLORATION_HANDS;
 
   if (toCall === 0) {
     if (legal.has("bet")) {
@@ -180,8 +189,11 @@ function decide(state) {
 
   // Facing a bet.
   const potOdds = toCall / (state.pot + toCall);
+  const callThreshold = exploring
+    ? Math.min(potOdds + CALL_MARGIN, EXPLORATION_CALL_FLOOR)
+    : potOdds + CALL_MARGIN;
 
-  if (eq >= potOdds + CALL_MARGIN) {
+  if (eq >= callThreshold) {
     if (eq >= VALUE_RAISE_EQ && legal.has("raise")) {
       const amount = sizeRaise(state.min_raise_to, state.max_raise_to, eq);
       if (amount !== null) return { action: "raise", amount };

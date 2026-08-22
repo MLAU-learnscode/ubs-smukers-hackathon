@@ -14,8 +14,6 @@ const BASE_URL =
 
 // mapId -> { graph, expiresAt }
 const graphCache = new Map();
-// mapId -> { path: string[], destination: string, expiresAt }
-const pathCache = new Map();
 
 // Fire-and-forget boot-time ping to wake the shared dyno (same host as the
 // study-materials service, which recallStudyMaterial.js also warms at boot)
@@ -211,24 +209,20 @@ function register(server) {
         return { content: [{ type: "text", text: destination }] };
       }
 
-      const cacheKey = `${mapId}:${destination}`;
-      pruneExpired(pathCache);
-      let cached = pathCache.get(cacheKey);
-
-      let path = cached && cached.path.includes(current) ? cached.path : null;
+      // Recomputed fresh every call: caching by mapId+destination alone risked
+      // handing back a path built under a different hop budget, or from an
+      // unrelated journey to the same destination — either wrong-cost routes
+      // or a blown hop curfew. Dijkstra on these graphs is microseconds, so
+      // there's no real cost to just not caching it.
+      const path = hopsRemaining
+        ? boundedDijkstra(adjacency, tolls, current, destination, hopsRemaining)
+        : dijkstra(adjacency, tolls, current, destination);
 
       if (!path) {
-        path = hopsRemaining
-          ? boundedDijkstra(adjacency, tolls, current, destination, hopsRemaining)
-          : dijkstra(adjacency, tolls, current, destination);
-
-        if (!path) {
-          return {
-            content: [{ type: "text", text: "error: no route found within constraints" }],
-            isError: true,
-          };
-        }
-        pathCache.set(cacheKey, { path, destination, expiresAt: Date.now() + CACHE_TTL_MS });
+        return {
+          content: [{ type: "text", text: "error: no route found within constraints" }],
+          isError: true,
+        };
       }
 
       const idx = path.indexOf(current);
