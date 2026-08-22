@@ -11,11 +11,6 @@ function decodePayload(payload) {
   let raw;
   try {
     raw = Buffer.from(payload, "base64");
-    // Reject non-base64 strings (Node silently ignores bad chars otherwise)
-    if (raw.toString("base64") !== payload.replace(/=/g, "").padEnd(Math.ceil(payload.replace(/=/g, "").length / 4) * 4, "=") &&
-        Buffer.from(raw).toString("base64") !== payload) {
-      // Loose check — just attempt JSON parse; invalid base64 will produce garbage
-    }
   } catch {
     const err = new Error("payload is not valid base64");
     err.statusCode = 400;
@@ -31,17 +26,32 @@ function decodePayload(payload) {
   }
 }
 
+function normalizePriority(rawPriority) {
+  if (typeof rawPriority === "number" && Number.isFinite(rawPriority)) {
+    return rawPriority;
+  }
+
+  const word = String(rawPriority ?? "").toUpperCase();
+  if (PRIORITY_MAP[word] != null) return PRIORITY_MAP[word];
+
+  const asNumber = Number(rawPriority);
+  if (rawPriority !== "" && rawPriority != null && Number.isFinite(asNumber)) {
+    return asNumber;
+  }
+
+  return DEFAULT_PRIORITY;
+}
+
 function transform(adaptInput) {
   const user = adaptInput.user || {};
   const action = adaptInput.action || "";
   const metadata = adaptInput.metadata || {};
-  const priorityWord = String(metadata.priority || "").toUpperCase();
 
   return {
     id: user.id ?? null,
     name: user.fullName ?? null,
     action: action.toLowerCase(),
-    priority: PRIORITY_MAP[priorityWord] ?? DEFAULT_PRIORITY,
+    priority: normalizePriority(metadata.priority),
   };
 }
 
@@ -85,15 +95,18 @@ const solve = (req, res, next) => {
 
     const decoded = decodePayload(payload);
 
-    if (!decoded.adaptInput || typeof decoded.adaptInput !== "object") {
-      const err = new Error("decoded payload missing 'adaptInput' object");
-      err.statusCode = 400;
-      return next(err);
+    const response = {};
+    if (decoded.adaptInput && typeof decoded.adaptInput === "object") {
+      response.adaptOutput = transform(decoded.adaptInput);
     }
-
-    const response = { adaptOutput: transform(decoded.adaptInput) };
     if ("heartbeats" in decoded) {
       response.sloOutput = computeSlo(decoded.heartbeats, decoded.sloQuery);
+    }
+
+    if (!("adaptOutput" in response) && !("sloOutput" in response)) {
+      const err = new Error("decoded payload missing both 'adaptInput' and 'heartbeats'");
+      err.statusCode = 400;
+      return next(err);
     }
 
     res.status(200).json(response);
