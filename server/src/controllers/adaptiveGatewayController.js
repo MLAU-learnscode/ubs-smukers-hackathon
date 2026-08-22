@@ -489,7 +489,10 @@ function computeSingleSlo(heartbeats, query = {}) {
 
   let p95LatencyMs = null;
   if (latencies.length > 0) {
-    const p95Index = Math.max(0, Math.ceil(0.95 * latencies.length) - 1);
+    const p95Index = Math.min(
+      latencies.length - 1,
+      Math.max(0, Math.round(0.95 * (latencies.length - 1)))
+    );
     p95LatencyMs = latencies[p95Index];
   }
 
