@@ -11,6 +11,12 @@ const W_CONV = 0.25;
 const W_CYCLE = 0.35;
 const W_LOOP = 0.35;
 
+// Phase 2 identity weights. Applied independently per dimension (ipAddress,
+// deviceId) and summed into the same raw score before the final clamp.
+const W_ID_BREAK = 0.2; // mid-flow identity shift or dropped identity on a continuous flow
+const W_ID_CROSS = 0.15; // same identity value reused across disconnected components
+const IDENTITY_DIMENSIONS = ["ipAddress", "deviceId"];
+
 function diminish(n) {
   return 1 - 1 / (1 + n);
 }
@@ -59,6 +65,8 @@ class GhostChainsGraph {
     this.txStore = new Map(); // txId -> { payloadHash, riskScore }
     this.expiryHeap = new MinHeap(); // [createdAtMs, edge]
     this.latestSeenTime = 0;
+    // Per-dimension identity value -> Set<Edge> currently carrying that value.
+    this.identityIndex = { ipAddress: new Map(), deviceId: new Map() };
   }
 
   _getOrCreateNode(id) {
@@ -89,6 +97,16 @@ class GhostChainsGraph {
 
   _removeEdge(edge) {
     edge.removed = true;
+
+    for (const dim of IDENTITY_DIMENSIONS) {
+      const value = edge[dim];
+      if (value === undefined) continue;
+      const set = this.identityIndex[dim].get(value);
+      if (set) {
+        set.delete(edge);
+        if (set.size === 0) this.identityIndex[dim].delete(value);
+      }
+    }
 
     const uNode = this.nodes.get(edge.from);
     if (uNode) {
@@ -124,6 +142,94 @@ class GhostChainsGraph {
     vNode.in.get(edge.from).push(edge);
 
     this.expiryHeap.push([edge.createdAt, edge]);
+
+    for (const dim of IDENTITY_DIMENSIONS) {
+      const value = edge[dim];
+      if (value === undefined) continue;
+      let set = this.identityIndex[dim].get(value);
+      if (!set) {
+        set = new Set();
+        this.identityIndex[dim].set(value, set);
+      }
+      set.add(edge);
+    }
+  }
+
+  // Undirected reachability over the active graph (both in- and out-edges),
+  // used only for identity's "disconnected component" check — structural
+  // scoring elsewhere stays directed.
+  _undirectedComponent(startId) {
+    const visited = new Set([startId]);
+    const queue = [startId];
+    while (queue.length > 0) {
+      const cur = queue.shift();
+      const node = this.nodes.get(cur);
+      if (!node) continue;
+      for (const next of node.out.keys()) {
+        if (!visited.has(next)) {
+          visited.add(next);
+          queue.push(next);
+        }
+      }
+      for (const prev of node.in.keys()) {
+        if (!visited.has(prev)) {
+          visited.add(prev);
+          queue.push(prev);
+        }
+      }
+    }
+    return visited;
+  }
+
+  // Identity signal for one dimension (ipAddress/deviceId) on the edge about
+  // to be committed. Two independent sub-signals, both evaluated against
+  // graph state *before* this edge:
+  //
+  //  - "break": the edges already flowing into `from` carry a single,
+  //    consistent value for this dimension, and this edge either changes it
+  //    (identity shift mid-flow / at a branch) or drops it entirely (a
+  //    plausible way to sever the trail). Only fires when upstream is
+  //    unambiguous — if upstream is already mixed, that ambiguity was
+  //    already scored on the edge that caused it.
+  //  - "cross": this edge's value (if present) is already in use by other
+  //    active edges sitting in a different undirected component. Counts
+  //    distinct external components, not raw edge count, so a burst of
+  //    edges within the same disconnected cluster doesn't inflate the
+  //    signal.
+  _identitySignal(dim, from, to, value) {
+    const fromNode = this.nodes.get(from);
+    let breakSignal = 0;
+    if (fromNode) {
+      const upstreamValues = new Set();
+      for (const arr of fromNode.in.values()) {
+        for (const e of arr) {
+          if (e[dim] !== undefined) upstreamValues.add(e[dim]);
+        }
+      }
+      if (upstreamValues.size === 1) {
+        const [onlyValue] = upstreamValues;
+        if (value === undefined || value !== onlyValue) breakSignal = 1;
+      }
+    }
+
+    let crossCount = 0;
+    if (value !== undefined) {
+      const sameValueEdges = this.identityIndex[dim].get(value);
+      if (sameValueEdges && sameValueEdges.size > 0) {
+        const localComponent = this._undirectedComponent(from);
+        localComponent.add(to);
+        const externalVisited = new Set();
+        for (const e of sameValueEdges) {
+          if (localComponent.has(e.from) || localComponent.has(e.to)) continue;
+          if (externalVisited.has(e.from) || externalVisited.has(e.to)) continue;
+          const otherComponent = this._undirectedComponent(e.from);
+          for (const id of otherComponent) externalVisited.add(id);
+          crossCount++;
+        }
+      }
+    }
+
+    return W_ID_BREAK * breakSignal + W_ID_CROSS * diminish(crossCount);
   }
 
   // Ancestors of `id` reachable backward over active in-edges, excluding
@@ -233,12 +339,18 @@ class GhostChainsGraph {
     const convergenceCount = this._countConvergingPaths(tx.to, tx.from, ancestorsOfU);
     const { found: cycleClosed, independentPathCount } = this._reachesBackInfo(tx.to, tx.from);
 
+    let identityRaw = 0;
+    for (const dim of IDENTITY_DIMENSIONS) {
+      identityRaw += this._identitySignal(dim, tx.from, tx.to, tx[dim]);
+    }
+
     const raw =
       BASE +
       W_EXT * extensionSignal +
       W_CONV * diminish(convergenceCount) +
       W_CYCLE * (cycleClosed ? 1 : 0) +
-      W_LOOP * diminish(independentPathCount);
+      W_LOOP * diminish(independentPathCount) +
+      identityRaw;
 
     this._commitEdge(edge);
     return clamp(raw, 0, 1);
