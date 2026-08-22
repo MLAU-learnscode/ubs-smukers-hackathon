@@ -3,6 +3,8 @@ const { McpServer } = require("@modelcontextprotocol/sdk/server/mcp.js");
 const getName = require("./tools/getName");
 const calculate = require("./tools/calculate");
 const identifyShape = require("./tools/identifyShape");
+const recallStudyMaterial = require("./tools/recallStudyMaterial");
+const planRoute = require("./tools/planRoute");
 
 function createMcpServer() {
   const server = new McpServer({
@@ -14,6 +16,8 @@ function createMcpServer() {
   getName.register(server);
   calculate.register(server);
   identifyShape.register(server);
+  recallStudyMaterial.register(server);
+  planRoute.register(server);
 
   return server;
 }
