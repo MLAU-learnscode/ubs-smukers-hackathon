@@ -94,11 +94,12 @@ const solve = (req, res, next) => {
     }
 
     const decoded = decodePayload(payload);
-
     const response = {};
+
     if (decoded.adaptInput && typeof decoded.adaptInput === "object") {
       response.adaptOutput = transform(decoded.adaptInput);
     }
+
     if ("heartbeats" in decoded) {
       response.sloOutput = computeSlo(decoded.heartbeats, decoded.sloQuery);
     }
