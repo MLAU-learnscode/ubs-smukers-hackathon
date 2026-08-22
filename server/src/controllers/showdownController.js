@@ -363,9 +363,14 @@ function legRemainingFrac(state) {
 }
 
 // Pick a bet/raise total (the "raise to" amount, not the increment) that
-// scales with hand strength between the legal min and max.
+// scales with hand strength between the legal min and max. Guards against
+// undefined (not just an explicit null) since a missing field and a null
+// field are both "no legal amount to compute against" - either one used to
+// slip through the strict `=== null` check, land in the arithmetic below,
+// and come out as NaN, which JSON.stringify silently turns into a
+// `null` amount on an action the caller still thought was a valid bet.
 function sizeRaise(minRaiseTo, maxRaiseTo, eq) {
-  if (minRaiseTo === null || maxRaiseTo === null) return null;
+  if (!Number.isFinite(minRaiseTo) || !Number.isFinite(maxRaiseTo)) return null;
   const t = clamp((eq - 0.5) / 0.5, 0, 1);
   const amount = Math.round(minRaiseTo + t * (maxRaiseTo - minRaiseTo));
   return clamp(amount, minRaiseTo, maxRaiseTo);
@@ -523,9 +528,28 @@ function decide(state) {
   return { action: "fold" };
 }
 
+// Safest legal response to an unforeseen state shape: never call/raise
+// blind, so an exception can never turn into an accidental chip commitment.
+function safestFallback(legal) {
+  if (legal.has("fold")) return { action: "fold" };
+  if (legal.has("check")) return { action: "check" };
+  return { action: "fold" };
+}
+
 const move = (req, res) => {
-  const decision = decide(req.body || {});
-  res.status(200).json(decision);
+  const state = req.body || {};
+  try {
+    const decision = decide(state);
+    res.status(200).json(decision);
+  } catch (err) {
+    // The game requires a valid action every turn - a thrown exception with
+    // no fallback would otherwise surface as a 500 with no move at all,
+    // which the game server has no reason to treat as anything but a
+    // forfeited hand. Degrade to the safest legal action instead of losing
+    // the turn (and any state built on it) outright.
+    console.error("showdown decide() threw, falling back to a safe action:", err);
+    res.status(200).json(safestFallback(new Set(state.legal_actions || [])));
+  }
 };
 
 const health = (req, res) => {

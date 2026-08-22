@@ -3,6 +3,7 @@ const assert = require("assert");
 const {
   decide,
   equity,
+  sizeRaise,
   buildRatingModel,
   countLiveOpponents,
   multiwayEquityFromHeadsUp,
@@ -222,6 +223,30 @@ assert.strictEqual(
   identifyRule([{ community_number: 5, shown_numbers: { 0: 9, 1: 3 }, winners: [0] }]),
   null,
   "a single showdown is not enough evidence to commit to a rule"
+);
+
+// --- sizeRaise: omitted (undefined) bounds are as invalid as explicit null
+// -----------------------------------------------------------------------
+// A missing field and an explicit null both mean "no legal amount to size
+// against" - only null used to be caught, so an omitted min/max_raise_to
+// fell through to NaN arithmetic, which JSON.stringify silently turns into
+// a `null` amount on a decision the caller still thought was a valid bet.
+assert.strictEqual(sizeRaise(undefined, undefined, 0.9), null, "undefined bounds must be rejected, not just null");
+assert.strictEqual(sizeRaise(5, undefined, 0.9), null, "a single undefined bound must be rejected");
+
+const betWithMissingRaiseBounds = {
+  phase: 2,
+  your_number: 3,
+  community_number: 3, // a pair - strong enough to trigger the bet branch
+  recent_hands: [],
+  legal_actions: ["bet", "check"],
+  to_call: 0,
+  // min_raise_to / max_raise_to intentionally omitted, not null
+};
+const missingBoundsResult = decide(betWithMissingRaiseBounds);
+assert.ok(
+  missingBoundsResult.action !== "bet" || Number.isFinite(missingBoundsResult.amount),
+  `a bet action must always carry a finite amount, got ${JSON.stringify(missingBoundsResult)}`
 );
 
 console.log("all showdown phase 3 tests passed");
