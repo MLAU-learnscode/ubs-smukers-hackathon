@@ -50,43 +50,34 @@ function traverse(entryTime, baseDuration, obsList) {
   let t = entryTime;
 
   while (true) {
-    let activeFactor = 1.0;
-    let activeEnd = null;
-
-    for (const [s, e, factor] of obsList) {
+    let factor = 1.0;
+    
+    // Calculate current factor
+    for (const [s, e, f] of obsList) {
       if (s <= t && t < e) {
-        if (activeEnd === null || factor < activeFactor) {
-          activeFactor = factor;
-          activeEnd = activeEnd === null ? e : Math.min(activeEnd, e);
-        }
+        if (f < factor) factor = f;
       }
     }
-
-    let regimeEnd, factor;
-    if (activeEnd !== null) {
-      regimeEnd = activeEnd;
-      factor = activeFactor;
-    } else {
-      factor = 1.0;
-      let minStart = null;
-      for (const [s] of obsList) {
-        if (s > t && (minStart === null || s < minStart)) minStart = s;
-      }
-      regimeEnd = minStart;
-    }
-
+    
     if (factor === 0) return null;
 
-    if (regimeEnd === null) {
+    // Find next event time > t
+    let nextEvent = null;
+    for (const [s, e] of obsList) {
+      if (s > t && (nextEvent === null || s < nextEvent)) nextEvent = s;
+      if (e > t && (nextEvent === null || e < nextEvent)) nextEvent = e;
+    }
+
+    if (nextEvent === null) {
       return t + remaining / factor;
     } else {
-      const available = regimeEnd - t;
+      const available = nextEvent - t;
       const progressPossible = available * factor;
       if (progressPossible >= remaining) {
         return t + remaining / factor;
       } else {
         remaining -= progressPossible;
-        t = regimeEnd;
+        t = nextEvent;
       }
     }
   }
