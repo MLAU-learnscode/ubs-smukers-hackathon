@@ -66,10 +66,12 @@ const ex4 = run([
 const ex5 = run([
   ["A", "B", 0],
   ["B", "C", 1000],
-  ["A", "D", 2000],
-  ["D", "C", 3000],
-  ["C", "A", 4000],
-]); // two independent branches (B and D) both leading back to A when C -> A closes
+  ["C", "A", 2000],
+  ["B", "D", 3000],
+  ["D", "A", 4000],
+]); // spec Phase 1 Example 5: two loops sharing first hop A->B, each closing
+   // independently back to A (via C, then via D) — matches the briefing's
+   // literal example verbatim (letters standing in for the named entities)
 
 check("Ex1 (isolated) < Ex2 (extension)", () => {
   assert.ok(last(ex1.scores) < last(ex2.scores), `${last(ex1.scores)} !< ${last(ex2.scores)}`);

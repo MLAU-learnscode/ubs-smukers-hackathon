@@ -146,15 +146,24 @@ class GhostChainsGraph {
     return visited;
   }
 
-  // Number of distinct existing predecessors of v that are either u itself
-  // or an ancestor of u — i.e. independent existing paths merging at v that
-  // would, after this edge, share a common origin with u.
+  // Number of distinct existing predecessors of v that share a common
+  // ancestor with u (including being u itself, an ancestor of u, or a
+  // sibling descending from the same origin) — i.e. independent existing
+  // paths merging at v that would, after this edge, trace back to a shared
+  // origin with u. Catches sibling convergence (two branches from the same
+  // ancestor meeting for the first time), not just direct lineage.
   _countConvergingPaths(v, u, ancestorsOfU) {
     const node = this.nodes.get(v);
     if (!node) return 0;
+    const uOrAncestors = ancestorsOfU; // already excludes u; check separately
     let count = 0;
     for (const src of node.in.keys()) {
-      if (src === u || ancestorsOfU.has(src)) count++;
+      if (src === u || uOrAncestors.has(src)) {
+        count++;
+        continue;
+      }
+      const srcAncestors = this._bfsBackwardAncestors(src);
+      if (srcAncestors.has(u) || [...srcAncestors].some((a) => uOrAncestors.has(a))) count++;
     }
     return count;
   }
@@ -179,15 +188,19 @@ class GhostChainsGraph {
   }
 
   // Whether v can already reach u (this edge would close a cycle), plus how
-  // many of v's distinct out-neighbors independently lead back to u.
+  // many other independent loops already close through v — existing
+  // predecessors of v that v can already reach (i.e. sit on a cycle with v).
+  // Checking predecessors rather than v's own first-hop out-neighbors
+  // catches loops that branch further downstream, not just at v itself.
   _reachesBackInfo(v, u) {
+    const found = this._canReach(v, u);
     const node = this.nodes.get(v);
-    if (!node) return { found: false, independentPathCount: 0 };
+    if (!node) return { found, independentPathCount: 0 };
     let independentPathCount = 0;
-    for (const w of node.out.keys()) {
-      if (w === u || this._canReach(w, u)) independentPathCount++;
+    for (const src of node.in.keys()) {
+      if (this._canReach(v, src)) independentPathCount++;
     }
-    return { found: independentPathCount > 0, independentPathCount };
+    return { found, independentPathCount };
   }
 
   // Scores `tx` against the current active graph, then commits it. Returns
@@ -225,7 +238,7 @@ class GhostChainsGraph {
       W_EXT * extensionSignal +
       W_CONV * diminish(convergenceCount) +
       W_CYCLE * (cycleClosed ? 1 : 0) +
-      W_LOOP * diminish(Math.max(0, independentPathCount - 1));
+      W_LOOP * diminish(independentPathCount);
 
     this._commitEdge(edge);
     return clamp(raw, 0, 1);
