@@ -11,26 +11,20 @@ const DEFAULT_PRIORITY = 2;
 
 function decodePayload(payload) {
   if (!/^[A-Za-z0-9+/=_-]+$/.test(payload)) {
-    const err = new Error("payload is not valid base64");
-    err.statusCode = 400;
-    throw err;
+    throw new Error("payload is not valid base64");
   }
 
   let raw;
   try {
     raw = Buffer.from(payload, "base64");
   } catch {
-    const err = new Error("payload is not valid base64");
-    err.statusCode = 400;
-    throw err;
+    throw new Error("payload is not valid base64");
   }
 
   try {
     return JSON.parse(raw.toString("utf8"));
   } catch {
-    const err = new Error("decoded payload is not valid JSON");
-    err.statusCode = 400;
-    throw err;
+    throw new Error("decoded payload is not valid JSON");
   }
 }
 
@@ -52,23 +46,23 @@ function normalizePriority(rawPriority) {
 
 function transform(adaptInput) {
   const user = adaptInput.user || {};
-  const action = adaptInput.action || "";
   const metadata = adaptInput.metadata || {};
+  const actionRaw = adaptInput.action || adaptInput.operation || "";
 
-  const id = user.id ?? adaptInput.userId ?? adaptInput.id ?? null;
-  const name = user.fullName ?? user.name ?? adaptInput.fullName ?? adaptInput.name ?? null;
-  const rawPriority = metadata.priority ?? adaptInput.priority ?? user.priority;
+  const id = user.id ?? user.userId ?? user.user_id ?? adaptInput.userId ?? adaptInput.user_id ?? adaptInput.id ?? null;
+  const name = user.fullName ?? user.full_name ?? user.name ?? user.userName ?? user.user_name ?? adaptInput.fullName ?? adaptInput.full_name ?? adaptInput.name ?? null;
+  const rawPriority = metadata.priority ?? metadata.level ?? adaptInput.priority ?? user.priority;
 
   return {
     id,
     name,
-    action: action.toLowerCase(),
+    action: String(actionRaw).trim().toLowerCase(),
     priority: normalizePriority(rawPriority),
   };
 }
 
 function computeSlo(heartbeats, sloQuery) {
-  if (!Array.isArray(heartbeats)) return { availability: null, p95LatencyMs: null };
+  if (!Array.isArray(heartbeats) || heartbeats.length === 0) return { availability: null, p95LatencyMs: null };
   const service = sloQuery?.service ?? null;
   const since = sloQuery?.since != null ? Number(sloQuery.since) : 0;
 
@@ -79,9 +73,6 @@ function computeSlo(heartbeats, sloQuery) {
     const ts = Number(h.timestamp);
     if (!Number.isFinite(ts) || ts < since) return false;
 
-    const lat = Number(h.latencyMs);
-    if (!Number.isFinite(lat)) return false;
-
     return true;
   });
 
@@ -91,11 +82,15 @@ function computeSlo(heartbeats, sloQuery) {
   const availability = okCount / filtered.length;
 
   const latencies = filtered
-    .map((h) => Number(h.latencyMs))
+    .map((h) => Number(h.latencyMs ?? h.latency_ms))
+    .filter((lat) => Number.isFinite(lat))
     .sort((a, b) => a - b);
 
-  const p95Index = Math.max(0, Math.ceil(0.95 * latencies.length) - 1);
-  const p95LatencyMs = latencies[p95Index];
+  let p95LatencyMs = null;
+  if (latencies.length > 0) {
+    const p95Index = Math.max(0, Math.ceil(0.95 * latencies.length) - 1);
+    p95LatencyMs = latencies[p95Index];
+  }
 
   return { availability, p95LatencyMs };
 }
@@ -109,9 +104,7 @@ const solve = (req, res, next) => {
     } else if (req.body && typeof req.body === "object" && (req.body.adaptInput || req.body.heartbeats)) {
       decoded = req.body;
     } else {
-      const err = new Error("Invalid request payload. Expected base64 string 'payload' or raw JSON.");
-      err.statusCode = 400;
-      return next(err);
+      return res.status(400).json({ error: "Invalid request payload. Expected base64 string 'payload' or raw JSON." });
     }
 
     const response = {};
@@ -125,14 +118,12 @@ const solve = (req, res, next) => {
     }
 
     if (!("adaptOutput" in response) && !("sloOutput" in response)) {
-      const err = new Error("decoded payload missing both 'adaptInput' and 'heartbeats'");
-      err.statusCode = 400;
-      return next(err);
+      return res.status(400).json({ error: "decoded payload missing both 'adaptInput' and 'heartbeats'" });
     }
 
-    res.status(200).json(response);
+    return res.status(200).json(response);
   } catch (err) {
-    next(err);
+    return res.status(400).json({ error: err.message || "Bad Request" });
   }
 };
 
