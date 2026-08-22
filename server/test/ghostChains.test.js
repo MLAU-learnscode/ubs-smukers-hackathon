@@ -22,9 +22,9 @@ function last(scores) {
 function run(edges) {
   const g = new GhostChainsGraph();
   const scores = [];
-  edges.forEach(([from, to, offsetMs], i) => {
+  edges.forEach(([from, to, offsetMs, extra], i) => {
     scores.push(
-      g.scoreAndCommit({ txId: `tx${i}`, from, to, amount: 100, createdAt: at(offsetMs ?? 0) })
+      g.scoreAndCommit({ txId: `tx${i}`, from, to, amount: 100, createdAt: at(offsetMs ?? 0), ...extra })
     );
   });
   return { graph: g, scores };
@@ -154,6 +154,86 @@ check("reset produces identical scores for an identical replayed scenario", () =
     secondScores.push(g.scoreAndCommit({ txId: `tx${i}`, from, to, amount: 100, createdAt: at(offsetMs) }));
   });
   assert.deepStrictEqual(secondScores, first, "scores diverged after reset + replay");
+});
+
+// --- Phase 2: identity signal fixtures (briefing examples 1-4) ---
+
+check("consistent identity along a flow adds no extra risk over baseline", () => {
+  const consistent = run([
+    ["A", "B", 0, { deviceId: "dev_ios" }],
+    ["B", "C", 1000, { deviceId: "dev_ios" }],
+    ["C", "D", 2000, { deviceId: "dev_ios" }],
+  ]);
+  const baseline = run([
+    ["A", "B", 0],
+    ["B", "C", 1000],
+    ["C", "D", 2000],
+  ]);
+  assert.strictEqual(last(consistent.scores), last(baseline.scores));
+});
+
+check("identity divergence at a branch scores higher than the consistent sibling branch", () => {
+  const { scores } = run([
+    ["A", "B", 0, { deviceId: "dev_ios" }],
+    ["B", "C", 1000, { deviceId: "dev_ios" }],
+    ["B", "E", 2000, { deviceId: "dev_ios" }], // consistent sibling branch
+    ["C", "D", 3000, { deviceId: "dev_android" }], // diverges from upstream device
+  ]);
+  assert.ok(scores[3] > scores[2], `${scores[3]} !> ${scores[2]}`);
+});
+
+check("identity shift mid-flow scores higher than the preceding consistent leg", () => {
+  const { scores } = run([
+    ["A", "B", 0, { deviceId: "dev_ios" }],
+    ["B", "C", 1000, { deviceId: "dev_ios" }],
+    ["C", "D", 2000, { deviceId: "dev_android" }], // shift
+  ]);
+  assert.ok(scores[2] > scores[1], `${scores[2]} !> ${scores[1]}`);
+});
+
+check("dropping identity mid-flow scores the same as an explicit identity shift", () => {
+  const shift = run([
+    ["A", "B", 0, { deviceId: "dev_ios" }],
+    ["B", "C", 1000, { deviceId: "dev_ios" }],
+    ["C", "D", 2000, { deviceId: "dev_android" }],
+  ]);
+  const drop = run([
+    ["A", "B", 0, { deviceId: "dev_ios" }],
+    ["B", "C", 1000, { deviceId: "dev_ios" }],
+    ["C", "D", 2000, {}],
+  ]);
+  assert.strictEqual(last(shift.scores), last(drop.scores));
+});
+
+check("missing identity on an unrelated (non-continuous) edge adds no signal", () => {
+  const { scores } = run([
+    ["A", "B", 0],
+    ["B", "C", 1000],
+  ]);
+  const baseline = run([
+    ["A", "B", 0],
+    ["B", "C", 1000],
+  ]);
+  assert.strictEqual(last(scores), last(baseline.scores));
+});
+
+check("shared identity across disconnected components raises risk relative to first sighting", () => {
+  const { scores } = run([
+    ["A", "B", 0, { ipAddress: "10.0.0.1" }],
+    ["C", "D", 1000, { ipAddress: "10.0.0.1" }],
+    ["E", "F", 2000, { ipAddress: "10.0.0.1" }],
+  ]);
+  assert.ok(scores[1] > scores[0], `${scores[1]} !> ${scores[0]}`);
+  assert.ok(scores[2] > scores[1], `${scores[2]} !> ${scores[1]}`);
+});
+
+check("shared identity within the same connected component is not treated as cross-component", () => {
+  const { scores } = run([
+    ["A", "B", 0, { ipAddress: "10.0.0.1" }],
+    ["B", "C", 1000, { ipAddress: "10.0.0.1" }],
+  ]);
+  // B->C is a plain extension with consistent upstream identity: no break, no cross-component hit.
+  assert.strictEqual(scores[1], 0.05 + 0.15);
 });
 
 console.log(`\n${passed} passed`);
