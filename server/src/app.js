@@ -6,6 +6,8 @@ const morgan = require("morgan");
 const routes = require("./routes");
 const { solve } = require("./controllers/adaptiveGatewayController");
 const { kanCheongDeliveryDriver } = require("./controllers/kanCheongController");
+const ghostChainsRoutes = require("./routes/ghostChainsRoutes");
+const { handleMcp } = require("./mcp/mcpHandler");
 const notFound = require("./middleware/notFound");
 const errorHandler = require("./middleware/errorHandler");
 
@@ -25,6 +27,9 @@ if (process.env.NODE_ENV !== "test") {
 // Routes — challenge-required root endpoints
 app.post("/solve", solve);
 app.post("/kan-cheong-delivery-driver", kanCheongDeliveryDriver);
+app.use("/ghost-chains", ghostChainsRoutes);
+app.post("/mcp", handleMcp);
+app.post("/mcp/", handleMcp);
 app.use("/api", routes);
 
 // 404 & error handling must come last
