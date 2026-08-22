@@ -9,16 +9,19 @@ function epochToIso(epoch) {
   return new Date(rounded * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
-function addDirection(adj, fromKey, toKey, eid, baseDur, obstructions) {
-  const obsList = [];
+function buildObsIndex(obstructions) {
+  const idx = new Map();
   for (const ob of obstructions) {
-    const obFrom = JSON.stringify(ob.edge.from);
-    const obTo = JSON.stringify(ob.edge.to);
-    if (ob.edge_id === eid && obFrom === fromKey && obTo === toKey) {
-      obsList.push([parseIso(ob.start_time), parseIso(ob.end_time), parseFloat(ob.speed_factor)]);
-    }
+    const key = `${ob.edge_id}|${JSON.stringify(ob.edge.from)}|${JSON.stringify(ob.edge.to)}`;
+    if (!idx.has(key)) idx.set(key, []);
+    idx.get(key).push([parseIso(ob.start_time), parseIso(ob.end_time), parseFloat(ob.speed_factor)]);
   }
-  obsList.sort((a, b) => a[0] - b[0]);
+  for (const list of idx.values()) list.sort((a, b) => a[0] - b[0]);
+  return idx;
+}
+
+function addDirection(adj, fromKey, toKey, eid, baseDur, obsIndex) {
+  const obsList = obsIndex.get(`${eid}|${fromKey}|${toKey}`) || [];
   if (!adj.has(fromKey)) adj.set(fromKey, []);
   adj.get(fromKey).push([eid, toKey, baseDur, obsList]);
 }
@@ -29,20 +32,22 @@ function buildGraph(nodes, edges, obstructions) {
     const key = JSON.stringify(n);
     if (!adj.has(key)) adj.set(key, []);
   }
+  const obsIndex = buildObsIndex(obstructions);
   for (const e of edges) {
     const n1 = JSON.stringify(e.node1);
     const n2 = JSON.stringify(e.node2);
     const { edge_id: eid, base_duration_sec: dur } = e;
-    addDirection(adj, n1, n2, eid, dur, obstructions);
-    addDirection(adj, n2, n1, eid, dur, obstructions);
+    addDirection(adj, n1, n2, eid, dur, obsIndex);
+    addDirection(adj, n2, n1, eid, dur, obsIndex);
   }
   return adj;
 }
 
 function traverse(entryTime, baseDuration, obsList) {
   let remaining = baseDuration;
+  if (remaining === 0) return entryTime;
+  if (obsList.length === 0) return entryTime + remaining;
   let t = entryTime;
-  if (remaining === 0) return t;
 
   while (true) {
     let activeFactor = 1.0;
