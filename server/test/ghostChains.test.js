@@ -119,6 +119,19 @@ check("a repeated direct A->B transfer is plain repetition, not structural conve
   assert.ok(last(scores) < last(ex3.scores), `${last(scores)} !< convergence ${last(ex3.scores)}`);
 });
 
+check("a repeated direct return edge doesn't compound into a fake multi-loop", () => {
+  // A single cycle A->B->C->A, then C->A repeats. The repeat is the same
+  // return edge recurring, not a second independent loop - it must stay at
+  // the single-cycle score, not climb toward ex5's genuine multi-loop.
+  const g = new GhostChainsGraph();
+  g.scoreAndCommit({ txId: "rc0", from: "A", to: "B", amount: 100, createdAt: at(0) });
+  g.scoreAndCommit({ txId: "rc1", from: "B", to: "C", amount: 100, createdAt: at(1000) });
+  const cycle1 = g.scoreAndCommit({ txId: "rc2", from: "C", to: "A", amount: 100, createdAt: at(2000) });
+  const cycleRepeat = g.scoreAndCommit({ txId: "rc3", from: "C", to: "A", amount: 100, createdAt: at(3000) });
+  assert.strictEqual(cycleRepeat, cycle1, `${cycleRepeat} !== single-cycle score ${cycle1}`);
+  assert.ok(cycleRepeat < last(ex5.scores), `${cycleRepeat} !< multi-loop ${last(ex5.scores)}`);
+});
+
 check("pure extension chain (no convergence/return) stays well below any return score", () => {
   const { scores } = run([
     ["A", "B", 0],

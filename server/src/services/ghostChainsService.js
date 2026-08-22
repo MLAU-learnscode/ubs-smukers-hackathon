@@ -349,15 +349,21 @@ class GhostChainsGraph {
 
   // Whether v can already reach u (this edge would close a cycle), plus how
   // many other independent loops already close through v — existing
-  // predecessors of v that v can already reach (i.e. sit on a cycle with v).
-  // Checking predecessors rather than v's own first-hop out-neighbors
-  // catches loops that branch further downstream, not just at v itself.
+  // predecessors of v (other than u itself) that v can already reach (i.e.
+  // sit on a cycle with v). Checking predecessors rather than v's own
+  // first-hop out-neighbors catches loops that branch further downstream,
+  // not just at v itself.
+  //
+  // A predecessor that *is* u is excluded: if u->v already existed and this
+  // edge repeats it, that's the same return edge recurring, not a second
+  // independent loop — it's already fully captured by `found`.
   _reachesBackInfo(v, u) {
     const found = this._canReach(v, u);
     const node = this.nodes.get(v);
     if (!node) return { found, independentPathCount: 0 };
     let independentPathCount = 0;
     for (const src of node.in.keys()) {
+      if (src === u) continue;
       if (this._canReach(v, src)) independentPathCount++;
     }
     return { found, independentPathCount };
