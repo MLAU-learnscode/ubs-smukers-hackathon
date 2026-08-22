@@ -6,7 +6,11 @@ function register(server) {
   server.registerTool(
     "calculate",
     {
-      description: "Arithmetic on two ints (-100..100): + - * /",
+      description:
+        "Arithmetic on two ints (-100..100): + - * /. Only handles one operation " +
+        "per call, so to evaluate a multi-operator expression, decompose it using " +
+        "standard order of operations first: resolve all * and / before + and -, " +
+        "then chain calls left to right within each precedence level.",
       inputSchema: {
         operator: z.enum(["+", "-", "*", "/"]),
         a: intRange,
