@@ -695,7 +695,8 @@ const solve = (req, res, next) => {
       });
     }
 
-    console.log(`[SOLVE 200] adaptOutput: ${Boolean(response.adaptOutput)}, sloOutput: ${Boolean(response.sloOutput)}`);
+    console.log("[BOT_INPUT]", JSON.stringify(decoded));
+    console.log("[BOT_OUTPUT]", JSON.stringify(response));
     return res.status(200).json(response);
   } catch (err) {
     console.error("[SOLVE 400 ERROR]", err.message);
