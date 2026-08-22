@@ -111,12 +111,15 @@ function solveCase(caseData) {
   }
 
   const timeKey = (t) => Math.round((t - startEpoch) * 1e6) / 1e6;
+  const startTk = 0;
 
+  // parent[`${node}|${tk}`] = { prevNode, prevTk, eid } — reconstructed once on arrival
+  const parent = new Map();
   const expandedStates = new Map();
   const settledNodes = new Set();
   const heap = new MinHeap();
   let counter = 0;
-  heap.push([startEpoch, counter, startCoord, []]);
+  heap.push([startEpoch, counter, startCoord]);
 
   const MAX_ITER = 2_000_000;
   let iterations = 0;
@@ -124,9 +127,20 @@ function solveCase(caseData) {
   while (heap.size > 0) {
     if (++iterations > MAX_ITER) break;
 
-    const [t, , node, path] = heap.pop();
+    const [t, , node] = heap.pop();
 
     if (node === endCoord) {
+      // Reconstruct path by following parent pointers backwards
+      const path = [];
+      let curNode = endCoord;
+      let curTk = timeKey(t);
+      while (!(curNode === startCoord && curTk === startTk)) {
+        const { prevNode, prevTk, eid } = parent.get(`${curNode}|${curTk}`);
+        path.push(eid);
+        curNode = prevNode;
+        curTk = prevTk;
+      }
+      path.reverse();
       const duration = Math.round((t - startEpoch) * 1e6) / 1e6;
       const durationOut = duration === Math.floor(duration) ? Math.floor(duration) : duration;
       return { total_duration_sec: durationOut, arrival_time: epochToIso(t), path };
@@ -145,8 +159,13 @@ function solveCase(caseData) {
     for (const [eid, neighbor, baseDur, obsList] of (adj.get(node) || [])) {
       const arrival = traverse(t, baseDur, obsList);
       if (arrival === null) continue;
+      const arrTk = timeKey(arrival);
+      const pKey = `${neighbor}|${arrTk}`;
+      if (!parent.has(pKey)) {
+        parent.set(pKey, { prevNode: node, prevTk: tk, eid });
+      }
       counter++;
-      heap.push([arrival, counter, neighbor, path.concat(eid)]);
+      heap.push([arrival, counter, neighbor]);
     }
   }
 
