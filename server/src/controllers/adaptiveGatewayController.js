@@ -689,13 +689,16 @@ const solve = (req, res, next) => {
     }
 
     if (!("adaptOutput" in response) && !("sloOutput" in response)) {
+      console.warn("[SOLVE 400] decoded payload missing both 'adaptInput' and 'heartbeats'", decoded);
       return res.status(400).json({
         error: "decoded payload missing both 'adaptInput' and 'heartbeats'",
       });
     }
 
+    console.log(`[SOLVE 200] adaptOutput: ${Boolean(response.adaptOutput)}, sloOutput: ${Boolean(response.sloOutput)}`);
     return res.status(200).json(response);
   } catch (err) {
+    console.error("[SOLVE 400 ERROR]", err.message);
     return res.status(400).json({ error: err.message || "Bad Request" });
   }
 };
