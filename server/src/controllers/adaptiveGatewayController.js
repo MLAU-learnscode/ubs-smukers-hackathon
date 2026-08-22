@@ -468,10 +468,7 @@ function computeSingleSlo(heartbeats, query = {}) {
   }
 
   const okCount = filtered.filter(isHeartbeatOk).length;
-  const availability =
-    filtered.length > 0
-      ? Math.round((okCount / filtered.length) * 10000) / 100
-      : null;
+  const availability = filtered.length > 0 ? okCount / filtered.length : null;
 
   const latencies = filtered
     .map((h) => {
@@ -503,6 +500,7 @@ function computeSingleSlo(heartbeats, query = {}) {
 }
 
 function computeSlo(heartbeats, sloQuery) {
+  if (!sloQuery) return null;
   if (Array.isArray(sloQuery)) {
     return sloQuery.map((q) => computeSingleSlo(heartbeats, q));
   }
@@ -687,17 +685,21 @@ const solve = (req, res, next) => {
       const hbs = hasHeartbeats
         ? (decoded.heartbeats ?? decoded.heartbeat ?? decoded.heart_beats)
         : getStoredHeartbeats();
-      response.sloOutput = computeSlo(hbs, query);
-    } else if (hasHeartbeats) {
-      const hbs =
-        decoded.heartbeats ?? decoded.heartbeat ?? decoded.heart_beats;
-      response.sloOutput = computeSlo(hbs, null);
+      const slo = computeSlo(hbs, query);
+      if (slo != null) response.sloOutput = slo;
     }
 
-    if (!("adaptOutput" in response) && !("sloOutput" in response)) {
-      console.warn("[SOLVE 400] decoded payload missing both 'adaptInput' and 'heartbeats'", decoded);
+    if (
+      !("adaptOutput" in response) &&
+      !("sloOutput" in response) &&
+      !hasHeartbeats
+    ) {
+      console.warn(
+        "[SOLVE 400] decoded payload missing 'adaptInput', 'heartbeats', and 'sloQuery'",
+        decoded
+      );
       return res.status(400).json({
-        error: "decoded payload missing both 'adaptInput' and 'heartbeats'",
+        error: "decoded payload missing 'adaptInput' and 'heartbeats'",
       });
     }
 

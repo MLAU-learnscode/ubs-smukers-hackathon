@@ -65,7 +65,7 @@ test("availability 2/3",
     { service: "s", timestamp: 2, latencyMs: 20, status: "OK" },
     { service: "s", timestamp: 3, latencyMs: 30, status: "FAIL" },
   ], sloQuery: { service: "s", since: 1 } }) },
-  { adaptOutput: ao, sloOutput: { availability: 0.6667, p95LatencyMs: 30 } });
+  { adaptOutput: ao, sloOutput: { availability: 2/3, p95LatencyMs: 30 } });
 
 test("empty heartbeats array",
   { payload: enc({ adaptInput: base, heartbeats: [], sloQuery: { service: "s", since: 0 } }) },
@@ -130,7 +130,7 @@ test("status HTTP 200, 201, 500",
     { service: "api", timestamp: 101, latencyMs: 60, status: "201" },
     { service: "api", timestamp: 102, latencyMs: 200, status: 500 }
   ], sloQuery: { service: "api", since: 100 } }) },
-  { sloOutput: { availability: 0.6667, p95LatencyMs: 200 } });
+  { sloOutput: { availability: 2/3, p95LatencyMs: 200 } });
 
 test("latency in string format '150ms' and '0.2s'",
   { payload: enc({ heartbeats: [
