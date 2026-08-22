@@ -301,24 +301,29 @@ class GhostChainsGraph {
     return visited;
   }
 
-  // Number of distinct existing predecessors of v that share a common
-  // ancestor with u (including being u itself, an ancestor of u, or a
-  // sibling descending from the same origin) — i.e. independent existing
-  // paths merging at v that would, after this edge, trace back to a shared
-  // origin with u. Catches sibling convergence (two branches from the same
+  // Number of distinct existing predecessors of v — other than u itself —
+  // that share a common ancestor with u (an ancestor of u, or a sibling
+  // descending from the same origin) — i.e. independent existing paths
+  // merging at v that would, after this edge, trace back to a shared origin
+  // with u. Catches sibling convergence (two branches from the same
   // ancestor meeting for the first time), not just direct lineage.
+  //
+  // A predecessor that *is* u itself is deliberately excluded: v already
+  // having a direct inbound edge from u means this new edge just repeats
+  // the same u->v link, not a second independent route arriving at v. That
+  // is plain repetition/extension, not structural convergence.
   _countConvergingPaths(v, u, ancestorsOfU) {
     const node = this.nodes.get(v);
     if (!node) return 0;
-    const uOrAncestors = ancestorsOfU; // already excludes u; check separately
     let count = 0;
     for (const src of node.in.keys()) {
-      if (src === u || uOrAncestors.has(src)) {
+      if (src === u) continue;
+      if (ancestorsOfU.has(src)) {
         count++;
         continue;
       }
       const srcAncestors = this._bfsBackwardAncestors(src);
-      if (srcAncestors.has(u) || [...srcAncestors].some((a) => uOrAncestors.has(a))) count++;
+      if (srcAncestors.has(u) || [...srcAncestors].some((a) => ancestorsOfU.has(a))) count++;
     }
     return count;
   }

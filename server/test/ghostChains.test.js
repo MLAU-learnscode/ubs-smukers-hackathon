@@ -106,6 +106,19 @@ check("repeated identical edge doesn't compound signal", () => {
   assert.strictEqual(s1, s2, `repeated edge score drifted: ${s1} vs ${s2}`);
 });
 
+check("a repeated direct A->B transfer is plain repetition, not structural convergence", () => {
+  // A second (distinct txId/amount) transfer over the *same* direct A->B
+  // link is not a second independent path merging at B - it must stay at
+  // extension level, not be mistaken for the genuine multi-path
+  // convergence exercised by ex3 (see _countConvergingPaths).
+  const { scores } = run([
+    ["A", "B", 0],
+    ["A", "B", 1000, { amount: 200 }],
+  ]);
+  assert.strictEqual(last(scores), last(ex2.scores), `${last(scores)} !== plain-extension ${last(ex2.scores)}`);
+  assert.ok(last(scores) < last(ex3.scores), `${last(scores)} !< convergence ${last(ex3.scores)}`);
+});
+
 check("pure extension chain (no convergence/return) stays well below any return score", () => {
   const { scores } = run([
     ["A", "B", 0],
