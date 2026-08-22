@@ -17,6 +17,13 @@ const W_ID_BREAK = 0.2; // mid-flow identity shift or dropped identity on a cont
 const W_ID_CROSS = 0.15; // same identity value reused across disconnected components
 const IDENTITY_DIMENSIONS = ["ipAddress", "deviceId"];
 
+// Phase 3 value weights. Value evidence is evaluated against a single
+// inferred flow segment (the most recent inbound edge on `from`), never
+// aggregated across sibling branches — see _valueSignal.
+const W_VALUE_REVERSAL = 0.35; // amount grows past what fed into this leg: contradicts layering
+const W_VALUE_CONFIRM = 0.1; // amount keeps shrinking, streak-scaled: confirms layering
+const VALUE_REVERSAL_SENSITIVITY = 100; // scales a small % overshoot into diminish()'s useful range
+
 function diminish(n) {
   return 1 - 1 / (1 + n);
 }
@@ -232,6 +239,48 @@ class GhostChainsGraph {
     return W_ID_BREAK * breakSignal + W_ID_CROSS * diminish(crossCount);
   }
 
+  // Value signal for the edge about to be committed (from -> ... -> to,
+  // amount). Compares `amount` against the single most recent active edge
+  // feeding into `from` — the best available guess at which inbound leg this
+  // outbound leg continues. Deliberately *not* aggregated across all of
+  // from's inbound edges: at a branch or convergence point each inbound edge
+  // represents an independent flow hypothesis, and mixing their amounts
+  // would blur exactly the segmentation the briefing calls out.
+  //
+  //  - amount <= predecessor's amount: expected layering decay. Confirms the
+  //    pattern; each additional consecutive confirming hop (tracked via
+  //    edge.decayStreak) very slightly reduces risk, saturating quickly.
+  //  - amount > predecessor's amount: reversal. Contradicts layering outright
+  //    and is scored as a standalone strong positive signal, scaled by how
+  //    far the amount overshot the predecessor.
+  //
+  // No inbound edge on `from` (root of a flow, or isolated) yields no value
+  // evidence at all — there is nothing yet to confirm or contradict.
+  _valueSignal(from, amount) {
+    const node = this.nodes.get(from);
+    let predecessor = null;
+    if (node) {
+      for (const arr of node.in.values()) {
+        for (const e of arr) {
+          if (!predecessor || e.createdAt > predecessor.createdAt) predecessor = e;
+        }
+      }
+    }
+
+    if (!predecessor || !Number.isFinite(predecessor.amount) || predecessor.amount <= 0) {
+      return { raw: 0, decayStreak: 0 };
+    }
+
+    const ratio = amount / predecessor.amount;
+    if (ratio > 1) {
+      const excess = ratio - 1;
+      return { raw: W_VALUE_REVERSAL * diminish(excess * VALUE_REVERSAL_SENSITIVITY), decayStreak: 0 };
+    }
+
+    const streak = 1 + (predecessor.decayStreak || 0);
+    return { raw: -W_VALUE_CONFIRM * diminish(streak - 1), decayStreak: streak };
+  }
+
   // Ancestors of `id` reachable backward over active in-edges, excluding
   // `id` itself. Bounded by the (already window-pruned) active graph.
   _bfsBackwardAncestors(id) {
@@ -344,13 +393,17 @@ class GhostChainsGraph {
       identityRaw += this._identitySignal(dim, tx.from, tx.to, tx[dim]);
     }
 
+    const valueSignal = this._valueSignal(tx.from, tx.amount);
+    edge.decayStreak = valueSignal.decayStreak;
+
     const raw =
       BASE +
       W_EXT * extensionSignal +
       W_CONV * diminish(convergenceCount) +
       W_CYCLE * (cycleClosed ? 1 : 0) +
       W_LOOP * diminish(independentPathCount) +
-      identityRaw;
+      identityRaw +
+      valueSignal.raw;
 
     this._commitEdge(edge);
     return clamp(raw, 0, 1);
