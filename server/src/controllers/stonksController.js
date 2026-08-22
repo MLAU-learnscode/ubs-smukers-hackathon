@@ -174,6 +174,7 @@ function solveCase(testCase) {
 
 const solveStonks = (req, res, next) => {
   try {
+    console.log("[STONK_INPUT]", JSON.stringify(req.body));
     const cases = Array.isArray(req.body) ? req.body : [];
     const results = cases.map((testCase, idx) => {
       try {
@@ -183,8 +184,10 @@ const solveStonks = (req, res, next) => {
         return [];
       }
     });
+    console.log("[STONK_OUTPUT]", JSON.stringify(results));
     res.status(200).json(results);
   } catch (err) {
+    console.error("[STONK ERROR]", err.message);
     next(err);
   }
 };
