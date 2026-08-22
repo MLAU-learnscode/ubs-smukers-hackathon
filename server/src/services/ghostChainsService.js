@@ -240,14 +240,16 @@ class GhostChainsGraph {
       throw err;
     }
 
-    const { txId, from, to, amount, createdAt } = txRaw;
+    // Wire format uses fromUserId/toUserId; normalize to from/to for the
+    // internal graph model (edges, hashing, scoring all speak from/to).
+    const { txId, fromUserId: from, toUserId: to, amount, createdAt } = txRaw;
     if (typeof txId !== "string" || !txId) {
       const err = new Error("'txId' (non-empty string) is required");
       err.statusCode = 400;
       throw err;
     }
     if (typeof from !== "string" || !from || typeof to !== "string" || !to) {
-      const err = new Error(`transaction ${txId}: 'from' and 'to' (strings) are required`);
+      const err = new Error(`transaction ${txId}: 'fromUserId' and 'toUserId' (strings) are required`);
       err.statusCode = 400;
       throw err;
     }
@@ -263,7 +265,8 @@ class GhostChainsGraph {
       throw err;
     }
 
-    const payloadHash = hashPayload(txRaw);
+    const normalized = { txId, from, to, amount, createdAt: nowMs, ipAddress: txRaw.ipAddress, deviceId: txRaw.deviceId };
+    const payloadHash = hashPayload(normalized);
 
     const existing = this.txStore.get(txId);
     if (existing) {
@@ -275,7 +278,7 @@ class GhostChainsGraph {
       throw err;
     }
 
-    const riskScore = this.scoreAndCommit({ ...txRaw, createdAt: nowMs });
+    const riskScore = this.scoreAndCommit({ ...normalized, createdAt: nowMs });
     this.txStore.set(txId, { payloadHash, riskScore });
     return { txId, riskScore };
   }
