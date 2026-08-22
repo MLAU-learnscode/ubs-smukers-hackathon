@@ -239,6 +239,50 @@ const BLUFF_EQ_CEILING = 0.28;
 const BLUFF_FREQUENCY = 0.25;
 const CALL_MARGIN = 0.06;
 
+// Busting is a flat -200 and last place at the table regardless of how well
+// a leg was going beforehand — there's no partial credit and no recovering
+// from 0 chips. That makes going bust categorically worse than folding away
+// a marginal +EV spot, especially early in a leg while the online rule
+// model hasn't converged yet and a "strong" hand might just be a wrong
+// prior. So once the stack is short, any call/raise that would commit a
+// large chunk of it needs a bigger equity margin than the same decision
+// would need with a deep stack, and bluffing (which risks a chunk of the
+// stack on a hand with no real equity) stops paying for itself entirely.
+const SURVIVAL_STACK_BB = 20; // below this many big blinds, start being careful
+const SURVIVAL_CRITICAL_BB = 8; // by here, be as careful as this guardrail gets
+const SURVIVAL_COMMIT_FRACTION = 0.4; // "a large chunk" of the stack, as a fraction
+const SURVIVAL_MAX_MARGIN = 0.15; // extra equity margin at its most cautious
+
+function isShortStacked(state) {
+  const bb = state.big_blind || 1;
+  const stack = state.your_stack;
+  if (stack === undefined || stack === null) return false;
+  return stack / bb < SURVIVAL_STACK_BB;
+}
+
+// Extra pot-odds margin to demand on a call that would commit a large
+// fraction of a short stack. 0 once the stack is comfortably deep, or once
+// the call is small relative to the stack — this only kicks in for
+// genuinely stack-threatening decisions, not routine pot-odds calls.
+function survivalCallMargin(state, toCall) {
+  const bb = state.big_blind || 1;
+  const stack = state.your_stack;
+  if (!stack || stack <= 0) return 0;
+
+  const stackBB = stack / bb;
+  if (stackBB >= SURVIVAL_STACK_BB) return 0;
+
+  const commitFraction = clamp(toCall / stack, 0, 1);
+  if (commitFraction < SURVIVAL_COMMIT_FRACTION) return 0;
+
+  const shortness = clamp(
+    (SURVIVAL_STACK_BB - stackBB) / (SURVIVAL_STACK_BB - SURVIVAL_CRITICAL_BB),
+    0,
+    1
+  );
+  return SURVIVAL_MAX_MARGIN * shortness * commitFraction;
+}
+
 // Multiway pots reward tighter play: with more live opponents, the odds
 // someone woke up with a real number go up, so value bets need a bit more
 // margin and bluffs need to fire less often to keep folding equity honest.
@@ -291,6 +335,15 @@ function decide(state) {
       callMargin = Math.max(0, callMargin - TRAILING_CALL_MARGIN_RELIEF);
     }
   }
+
+  // Short-stacked: a bluff risks a real chunk of a stack that has no
+  // recovery once it hits 0, for a hand with no genuine equity behind it.
+  // Value bets/raises with real strength are untouched — pushing a short
+  // stack with a real hand is still correct, only the bluffing stops.
+  if (state.phase !== 1 && isShortStacked(state)) {
+    bluffFrequency = 0;
+  }
+  callMargin += survivalCallMargin(state, toCall);
 
   if (toCall === 0) {
     if (legal.has("bet")) {
@@ -355,4 +408,6 @@ module.exports = {
   multiwayEquityFromHeadsUp,
   isLeadingTable,
   legRemainingFrac,
+  isShortStacked,
+  survivalCallMargin,
 };
