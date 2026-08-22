@@ -46,16 +46,30 @@ function transform(adaptInput) {
 }
 
 function computeSlo(heartbeats, sloQuery) {
-  if (!Array.isArray(heartbeats) || !sloQuery) return null;
-  const since = Number(sloQuery.since);
-  const filtered = heartbeats.filter(
-    (h) => h.service === sloQuery.service && Number(h.timestamp) >= since
-  );
+  if (!Array.isArray(heartbeats)) return { availability: null, p95LatencyMs: null };
+  const service = sloQuery?.service ?? null;
+  const since = sloQuery?.since != null ? Number(sloQuery.since) : 0;
+
+  const filtered = heartbeats.filter((h) => {
+    if (!h) return false;
+    if (service !== null && h.service !== service) return false;
+    return Number(h.timestamp) >= since;
+  });
+
   if (filtered.length === 0) return { availability: null, p95LatencyMs: null };
-  const okCount = filtered.filter((h) => h.status === "OK").length;
+
+  const okCount = filtered.filter((h) => String(h.status ?? "").toUpperCase() === "OK").length;
   const availability = okCount / filtered.length;
-  const latencies = filtered.map((h) => Number(h.latencyMs)).sort((a, b) => a - b);
-  const p95LatencyMs = latencies[Math.ceil(0.95 * latencies.length) - 1];
+
+  const latencies = filtered
+    .map((h) => Number(h.latencyMs))
+    .filter(Number.isFinite)
+    .sort((a, b) => a - b);
+
+  const p95LatencyMs = latencies.length > 0
+    ? latencies[Math.ceil(0.95 * latencies.length) - 1]
+    : null;
+
   return { availability, p95LatencyMs };
 }
 
@@ -78,8 +92,9 @@ const solve = (req, res, next) => {
     }
 
     const response = { adaptOutput: transform(decoded.adaptInput) };
-    const sloOutput = computeSlo(decoded.heartbeats, decoded.sloQuery);
-    if (sloOutput !== null) response.sloOutput = sloOutput;
+    if ("heartbeats" in decoded) {
+      response.sloOutput = computeSlo(decoded.heartbeats, decoded.sloQuery);
+    }
 
     res.status(200).json(response);
   } catch (err) {
