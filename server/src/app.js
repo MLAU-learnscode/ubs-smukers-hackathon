@@ -19,6 +19,7 @@ app.use(helmet());
 app.use(cors());
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ extended: true, limit: "50mb" }));
+app.use(express.text({ type: "*/*", limit: "50mb" }));
 
 // Logging (skip in test environment)
 if (process.env.NODE_ENV !== "test") {
@@ -27,6 +28,11 @@ if (process.env.NODE_ENV !== "test") {
 
 // Routes — challenge-required root endpoints
 app.post("/solve", solve);
+app.post("/solve/", solve);
+app.post("/adaptive-gateway/solve", solve);
+app.post("/adaptive-gateway/solve/", solve);
+app.post("/api/solve", solve);
+app.post("/api/solve/", solve);
 app.post("/kan-cheong-delivery-driver", kanCheongDeliveryDriver);
 app.use("/ghost-chains", ghostChainsRoutes);
 app.post("/move", showdownMove);
