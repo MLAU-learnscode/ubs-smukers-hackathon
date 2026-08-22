@@ -235,8 +235,17 @@ function register(server) {
 
       const selected = selectPassages(candidatePassages, query);
 
+      // The grader needs the raw result to parse as a JSON array of strings.
+      // Multiple `content` text blocks get joined into one plain string
+      // somewhere upstream of the grader with no separators (confirmed
+      // against a real run record — a hard "Retrieval must return a JSON
+      // array of strings" fault), so the array must travel as JSON text in
+      // a single block instead. `structuredContent` can't carry it either —
+      // the MCP wire schema requires it to be a JSON object, not a bare
+      // array, and rejects the whole call outright if it isn't (also
+      // confirmed live).
       return {
-        content: selected.map((text) => ({ type: "text", text })),
+        content: [{ type: "text", text: JSON.stringify(selected) }],
       };
     }
   );
