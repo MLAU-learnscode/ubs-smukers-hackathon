@@ -121,6 +121,7 @@ function isV2ToV1Request(input, parentContext = {}) {
     input.targetVersion ??
       input.target_version ??
       input.to ??
+      input.target ??
       parentContext.targetVersion ??
       parentContext.to ??
       ""
@@ -137,6 +138,16 @@ function isV2ToV1Request(input, parentContext = {}) {
   if (ver === "v2" || ver === "2") {
     if (targetVer !== "v2" && targetVer !== "2") return true;
   }
+
+  // Auto-detect structural V2 input (has root id/name, no nested user object)
+  const hasUserObj = input.user && typeof input.user === "object";
+  const hasMetadataObj = input.metadata && typeof input.metadata === "object";
+  const hasV2Shape =
+    !hasUserObj &&
+    !hasMetadataObj &&
+    (input.id != null || input.name != null || typeof input.priority === "number");
+
+  if (hasV2Shape) return true;
 
   return false;
 }
