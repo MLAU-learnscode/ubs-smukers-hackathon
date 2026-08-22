@@ -14,8 +14,8 @@ const app = express();
 // Security & parsing
 app.use(helmet());
 app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: "50mb" }));
+app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 
 // Logging (skip in test environment)
 if (process.env.NODE_ENV !== "test") {

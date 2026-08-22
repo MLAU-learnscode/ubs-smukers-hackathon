@@ -131,7 +131,9 @@ function solveCase(caseData) {
   for (const list of obsMap.values()) {
     for (const [, e] of list) allEnds.push(e);
   }
-  const cutoff = allEnds.length > 0 ? Math.max(...allEnds) : startEpoch;
+  const cutoff = allEnds.length > 0
+    ? allEnds.reduce((a, b) => (b > a ? b : a), -Infinity)
+    : startEpoch;
 
   const prev = new Map();       // `${node}|${time}` -> { prevNode, prevTime, eid }
   const processed = new Map();  // node -> Set<time>
