@@ -84,7 +84,7 @@ function splitIntoPassages(text) {
   return passages;
 }
 
-function scorePassage(passageWords, questionWordCounts) {
+function scorePassage(passageWords, questionWordCounts, rawText) {
   let score = 0;
   for (const w of passageWords) {
     const qc = questionWordCounts.get(w);
@@ -92,12 +92,20 @@ function scorePassage(passageWords, questionWordCounts) {
   }
   // Numbers/dates are frequently the actual "fact" being tested, and rarely
   // appear in the question itself, so give passages containing them a boost.
-  if (/\b\d/.test(passageWords.join(" "))) score += 0.5;
+  // Checked against the raw text, not passageWords — tokenizeWords drops
+  // single-character tokens, which would silently swallow single-digit dates
+  // like the "8" in "8 September" and lose the boost for exactly the kind of
+  // passage this is meant to catch.
+  if (/\b\d/.test(rawText)) score += 0.5;
   return score;
 }
 
-function selectPassages(candidatePassages, question) {
-  const qWords = tokenizeWords(question);
+function selectPassages(candidatePassages, question, excludeWords = new Set()) {
+  // Words already spent routing to this document (e.g. "engine" matching a
+  // document titled "... Engine ...") are worthless for ranking passages
+  // *within* that document — they recur in nearly every paragraph there,
+  // so they'd outrank the actual (differently-worded) answer passage.
+  const qWords = tokenizeWords(question).filter((w) => !excludeWords.has(w));
   const qCounts = new Map();
   for (const w of qWords) qCounts.set(w, (qCounts.get(w) || 0) + 1);
 
@@ -107,7 +115,7 @@ function selectPassages(candidatePassages, question) {
       return {
         text,
         tokens: countTokens(text),
-        score: scorePassage(words, qCounts),
+        score: scorePassage(words, qCounts, text),
       };
     })
     .filter((p) => p.tokens > 0 && p.tokens <= TOKEN_BUDGET)
@@ -220,8 +228,35 @@ function register(server) {
         };
       }
 
+      // Route to the document(s) whose TITLE shares words with the question
+      // first. Passage-level keyword overlap is unreliable here — the docs
+      // are deliberately paraphrased away from how the questions are worded
+      // (e.g. a question about "the engine" is answered by a sentence about
+      // "animation blending", sharing zero words) — but a question about a
+      // document's subject almost always names something in that document's
+      // (short, topically pure) title, even when the specific fact doesn't
+      // share vocabulary with the passage that states it. Falls back to the
+      // full corpus when no title matches at all.
+      const qWords = tokenizeWords(query);
+      const titleScores = documents.map((doc) => {
+        const titleWords = new Set(tokenizeWords(doc.title || ""));
+        return { doc, score: qWords.filter((w) => titleWords.has(w)).length };
+      });
+      const maxTitleScore = Math.max(0, ...titleScores.map((t) => t.score));
+      const routedTitleScores =
+        maxTitleScore > 0 ? titleScores.filter((t) => t.score === maxTitleScore) : titleScores;
+      const routedDocs = routedTitleScores.map((t) => t.doc);
+      const routingWords =
+        maxTitleScore > 0
+          ? new Set(
+              routedTitleScores.flatMap((t) =>
+                qWords.filter((w) => new Set(tokenizeWords(t.doc.title || "")).has(w))
+              )
+            )
+          : new Set();
+
       const candidatePassages = [];
-      for (const doc of documents) {
+      for (const doc of routedDocs) {
         const text = docText.get(doc.url);
         if (text) candidatePassages.push(...splitIntoPassages(text));
       }
@@ -233,7 +268,7 @@ function register(server) {
         };
       }
 
-      const selected = selectPassages(candidatePassages, query);
+      const selected = selectPassages(candidatePassages, query, routingWords);
 
       // The grader needs the raw result to parse as a JSON array of strings.
       // Multiple `content` text blocks get joined into one plain string
