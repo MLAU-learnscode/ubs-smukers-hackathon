@@ -160,6 +160,139 @@ function learnedEquity(yourNumber, community, model) {
   return total / 13;
 }
 
+// --- Phase 3: fast rule identification --------------------------------
+//
+// The Elo model above nudges a rating by a small fixed step (ELO_K) per
+// observed showdown, starting from a standard-rule prior. That works fine
+// when the true rule is close to standard, but real showdown data has shown
+// at least one table_rule (seen live: a pair losing to a non-pair, and the
+// LOWER non-pair number winning — the exact mirror image of standard) that
+// is a full inversion of the prior. Inverting 13 numbers' relative order one
+// small nudge at a time takes far more hands than we get before the model's
+// own (badly wrong-signed) confidence has already pushed real money into
+// exactly the hands that are worst under the true rule.
+//
+// So before falling back to the slow Elo nudge, test a handful of simple,
+// fully-specified candidate rules directly against every showdown seen so
+// far. A single pair-loses-to-non-pair result already falsifies "standard"
+// outright — that's decisive in a way no small Elo step can be. Once one
+// candidate clearly dominates, use its exact equity instead of the Elo
+// model's noisy estimate.
+//
+// Each comparator answers "who wins, A or B, given this community number",
+// returning 1 (A), -1 (B), or 0 (tie) — the only two-player-decomposable
+// shapes a showdown rule can plausibly take from this game's primitives.
+const RULE_HYPOTHESES = {
+  standard: (a, b, c) => {
+    const aPair = a === c;
+    const bPair = b === c;
+    if (aPair !== bPair) return aPair ? 1 : -1;
+    if (a === b) return 0;
+    return a > b ? 1 : -1;
+  },
+  inverted: (a, b, c) => {
+    const aPair = a === c;
+    const bPair = b === c;
+    if (aPair !== bPair) return aPair ? -1 : 1;
+    if (a === b) return 0;
+    return a < b ? 1 : -1;
+  },
+  pureHigh: (a, b) => (a === b ? 0 : a > b ? 1 : -1),
+  pureLow: (a, b) => (a === b ? 0 : a < b ? 1 : -1),
+  closestToCommunity: (a, b, c) => {
+    const da = Math.abs(a - c);
+    const db = Math.abs(b - c);
+    return da === db ? 0 : da < db ? 1 : -1;
+  },
+  farthestFromCommunity: (a, b, c) => {
+    const da = Math.abs(a - c);
+    const db = Math.abs(b - c);
+    return da === db ? 0 : da > db ? 1 : -1;
+  },
+};
+
+// Score every candidate rule against every provable pairwise outcome in
+// recent_hands. A pair (i, j) is only provable when at least one of them is
+// in `winners`: if i won and j didn't, i is definitively better than j under
+// whatever the true rule is (regardless of a third player k also winning or
+// losing) — transitivity of any total-order rule guarantees that. Two seats
+// that both lost carry no provable relation to each other from `winners`
+// alone, so those pairs are skipped rather than guessed at.
+function scoreRuleHypotheses(recentHands) {
+  const scores = {};
+  for (const name of Object.keys(RULE_HYPOTHESES)) scores[name] = { correct: 0, total: 0 };
+
+  for (const hand of recentHands || []) {
+    const community = hand.community_number;
+    const shown = hand.shown_numbers;
+    if (community === null || community === undefined || !shown) continue;
+
+    const seats = Object.keys(shown).map(Number);
+    if (seats.length < 2) continue;
+    const winners = new Set(hand.winners || []);
+
+    for (let i = 0; i < seats.length; i++) {
+      for (let j = i + 1; j < seats.length; j++) {
+        const seatA = seats[i];
+        const seatB = seats[j];
+        const aWon = winners.has(seatA);
+        const bWon = winners.has(seatB);
+        if (aWon === bWon && !aWon) continue; // both lost: no provable relation
+
+        const actual = aWon && bWon ? 0 : aWon ? 1 : -1;
+        const numA = shown[seatA];
+        const numB = shown[seatB];
+
+        for (const [name, cmp] of Object.entries(RULE_HYPOTHESES)) {
+          scores[name].total++;
+          if (cmp(numA, numB, community) === actual) scores[name].correct++;
+        }
+      }
+    }
+  }
+
+  return scores;
+}
+
+const RULE_ID_MIN_SAMPLES = 6; // provable pairwise comparisons needed before trusting a hypothesis
+const RULE_ID_MIN_ACCURACY = 0.8; // below this, the "best" guess still isn't good enough to act on
+
+// Pick the best-fitting rule name, or null if there isn't enough evidence
+// yet (too few provable comparisons) or no candidate clearly fits (a rule
+// we haven't modeled, e.g. one that depends on matching another player's
+// number rather than the community number) — callers should fall back to
+// the slower online Elo model in that case.
+function identifyRule(recentHands) {
+  const scores = scoreRuleHypotheses(recentHands);
+  let best = null;
+  for (const [name, s] of Object.entries(scores)) {
+    if (s.total < RULE_ID_MIN_SAMPLES) continue;
+    const accuracy = s.correct / s.total;
+    if (accuracy < RULE_ID_MIN_ACCURACY) continue;
+    if (!best || accuracy > best.accuracy) best = { name, accuracy, total: s.total };
+  }
+  return best ? best.name : null;
+}
+
+// Same shape as equity()/learnedEquity() above, but driven directly by an
+// identified comparator rule instead of a hardcoded or slowly-learned one.
+function comparatorEquity(yourNumber, community, comparator) {
+  if (community === null || community === undefined) {
+    let total = 0;
+    for (let c = 1; c <= 13; c++) total += comparatorEquity(yourNumber, c, comparator);
+    return total / 13;
+  }
+
+  let win = 0;
+  let split = 0;
+  for (let o = 1; o <= 13; o++) {
+    const result = comparator(yourNumber, o, community);
+    if (result > 0) win++;
+    else if (result === 0) split++;
+  }
+  return (win + split * 0.5) / 13;
+}
+
 // Live opponents this hand: seated players other than us who haven't folded
 // or busted out. `players` is the table's full seating (folded players stay
 // listed with folded: true), so this has to be filtered explicitly rather
@@ -193,10 +326,15 @@ function computeEquity(state) {
   const community = state.community_number ?? null;
   const numOpponents = Math.max(1, countLiveOpponents(state));
 
-  const headsUpEq =
-    state.phase === 1
-      ? equity(state.your_number, community)
+  let headsUpEq;
+  if (state.phase === 1) {
+    headsUpEq = equity(state.your_number, community);
+  } else {
+    const identified = identifyRule(state.recent_hands);
+    headsUpEq = identified
+      ? comparatorEquity(state.your_number, community, RULE_HYPOTHESES[identified])
       : learnedEquity(state.your_number, community, buildRatingModel(state.recent_hands));
+  }
 
   const winProb = multiwayEquityFromHeadsUp(headsUpEq, numOpponents);
   return { headsUpEq, winProb, numOpponents };
@@ -410,4 +548,8 @@ module.exports = {
   legRemainingFrac,
   isShortStacked,
   survivalCallMargin,
+  RULE_HYPOTHESES,
+  scoreRuleHypotheses,
+  identifyRule,
+  comparatorEquity,
 };

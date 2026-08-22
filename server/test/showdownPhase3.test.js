@@ -10,6 +10,9 @@ const {
   legRemainingFrac,
   isShortStacked,
   survivalCallMargin,
+  RULE_HYPOTHESES,
+  identifyRule,
+  comparatorEquity,
 } = require("../src/controllers/showdownController");
 
 // --- countLiveOpponents: filters folded/busted seats other than us -------
@@ -165,6 +168,60 @@ assert.strictEqual(
   decide(shortStackFacingBet).action,
   "fold",
   "a weak hand shouldn't call off most of a near-critical stack multiway"
+);
+
+// --- identifyRule: real showdowns from a fully-inverted table_rule -------
+// Taken from an actual failing match (rule codename "obsidian"): a pair
+// loses to a non-pair, and among non-pairs the lower number wins — the
+// exact mirror of the standard rule. This is real evidence, not synthetic.
+const obsidianShowdowns = [
+  { community_number: 3, shown_numbers: { 3: 9, 5: 3 }, winners: [3] }, // pair (5) loses to non-pair (3)
+  { community_number: 8, shown_numbers: { 2: 3, 3: 2 }, winners: [3] },
+  { community_number: 3, shown_numbers: { 0: 9, 3: 7, 4: 2 }, winners: [4] },
+  { community_number: 4, shown_numbers: { 0: 11, 3: 6 }, winners: [3] },
+  { community_number: 5, shown_numbers: { 2: 6, 4: 1 }, winners: [4] },
+  { community_number: 7, shown_numbers: { 1: 3, 3: 10 }, winners: [1] },
+  { community_number: 9, shown_numbers: { 2: 3, 3: 8 }, winners: [2] },
+  { community_number: 3, shown_numbers: { 1: 1, 3: 5 }, winners: [1] },
+  { community_number: 13, shown_numbers: { 0: 2, 1: 3, 3: 7 }, winners: [0] },
+  { community_number: 4, shown_numbers: { 1: 4, 3: 6 }, winners: [3] },
+];
+assert.strictEqual(
+  identifyRule(obsidianShowdowns),
+  "inverted",
+  "real obsidian showdowns should identify as the fully-inverted rule, not standard"
+);
+
+// The old failure mode: treating this data as standard-rule would think a
+// low card like 2 is nearly worthless. Under the correctly-identified
+// inverted rule, it should instead show strong equity.
+const invertedEqLow = comparatorEquity(2, 9, RULE_HYPOTHESES.inverted);
+const standardEqLow = comparatorEquity(2, 9, RULE_HYPOTHESES.standard);
+assert.ok(
+  invertedEqLow > standardEqLow,
+  "a low, unpaired number should show much better equity under the identified inverted rule than under standard"
+);
+
+// A small, clearly-standard sample shouldn't be mistaken for inverted.
+const standardShowdowns = [
+  { community_number: 5, shown_numbers: { 0: 11, 1: 7 }, winners: [0] },
+  { community_number: 2, shown_numbers: { 0: 13, 1: 4 }, winners: [0] },
+  { community_number: 9, shown_numbers: { 0: 12, 1: 3 }, winners: [0] },
+  { community_number: 1, shown_numbers: { 0: 10, 1: 9, 2: 6 }, winners: [0] },
+  { community_number: 4, shown_numbers: { 0: 8, 1: 4, 2: 2 }, winners: [1] }, // seat1 pairs community, beats higher non-pair
+  { community_number: 6, shown_numbers: { 0: 6, 1: 3 }, winners: [0] }, // seat0 pairs community
+];
+assert.strictEqual(
+  identifyRule(standardShowdowns),
+  "standard",
+  "clearly standard-rule showdowns should identify as standard"
+);
+
+// Too little evidence should defer (null) rather than guess.
+assert.strictEqual(
+  identifyRule([{ community_number: 5, shown_numbers: { 0: 9, 1: 3 }, winners: [0] }]),
+  null,
+  "a single showdown is not enough evidence to commit to a rule"
 );
 
 console.log("all showdown phase 3 tests passed");
