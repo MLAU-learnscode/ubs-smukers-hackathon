@@ -27,6 +27,21 @@
 // Phase 3 also scores strictly on topping the table (highest chip delta at
 // the table, not just being up), so decide() nudges aggression by whether
 // we're currently leading and how much of the leg is left.
+//
+// Phase 4 is a knockout tournament against other teams' bots (never ours),
+// up to 7 seats per table, one table_rule per table as before. Every round
+// that survives a cut reshuffles into a fresh table with a fresh leg, so
+// recent_hands still resets exactly when the rule would change under us —
+// nothing here is keyed to a fixed seat count, so the phase-3 multiway
+// logic (countLiveOpponents, multiwayEquityFromHeadsUp, the rating/rule
+// models) already generalizes from 6 seats to 7 without modification. The
+// two things phase 4 actually adds are operational, not mathematical: the
+// health check (health() below) has to stay cheap and dependency-free so it
+// can't fail right before the bracket cuts, and move() has to degrade to a
+// safe legal action rather than throw for literally any payload shape,
+// since a bad table_rule guess or a malformed field from an unfamiliar
+// opponent bot's match is not grounds for forfeiting a hand (see
+// safestFallback()).
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
