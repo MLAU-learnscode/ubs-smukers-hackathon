@@ -470,7 +470,7 @@ function computeSingleSlo(heartbeats, query = {}) {
   const okCount = filtered.filter(isHeartbeatOk).length;
   const availability =
     filtered.length > 0
-      ? Math.round((okCount / filtered.length) * 10000) / 10000
+      ? Math.round((okCount / filtered.length) * 10000) / 100
       : null;
 
   const latencies = filtered
