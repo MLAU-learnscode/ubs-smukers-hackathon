@@ -1,13 +1,27 @@
 const { z } = require("zod");
 
-const FETCH_TIMEOUT_MS = 6000; // leaves headroom under the 10s tool deadline
+// This host has been observed taking 20s+ to answer on a cold start (well
+// past the 10s tool deadline). Unlike the study-materials corpus, a map's
+// graph can't be pre-warmed — map_id isn't known until the android calls us
+// with it — so the per-call timeout is set as generously as the deadline
+// allows instead.
+const FETCH_TIMEOUT_MS = 8800;
 const CACHE_TTL_MS = 60 * 60 * 1000;
-const BASE_URL = process.env.MAP_SERVICE_BASE_URL || "";
+// Confirmed live via curl (returns a structured "Invalid map_id" 400 rather
+// than a 404), same host as the study-materials index from the qna.
+const BASE_URL =
+  process.env.MAP_SERVICE_BASE_URL || "https://tool-box-2591eaa24fa3.herokuapp.com";
 
 // mapId -> { graph, expiresAt }
 const graphCache = new Map();
 // mapId -> { path: string[], destination: string, expiresAt }
 const pathCache = new Map();
+
+// Fire-and-forget boot-time ping to wake the shared dyno (same host as the
+// study-materials service, which recallStudyMaterial.js also warms at boot)
+// before any real journey is asked of us. Errors are irrelevant here — this
+// is purely to avoid being the request that pays the cold-start cost.
+fetch(`${BASE_URL}/graph?map_id=__warmup__`).catch(() => {});
 
 function pruneExpired(cache) {
   const now = Date.now();

@@ -2,12 +2,30 @@ const { z } = require("zod");
 const { getEncoding } = require("js-tiktoken");
 
 const TOKEN_BUDGET = 900;
-const FETCH_TIMEOUT_MS = 6000; // leaves headroom under the 10s tool deadline
-const MAX_MATERIALS = 12; // cap parallel fetches so we don't blow the deadline
-const SEARCH_SERVICE_BASE_URL = process.env.SEARCH_SERVICE_BASE_URL || "";
+
+// The study-materials host (confirmed live via the qna) can take 20s+ to
+// answer on a cold start — far past the 10s tool deadline. Fetching on
+// demand inside the tool call is a losing game no matter how the timeout is
+// tuned, so instead we warm a full in-memory copy of the corpus in the
+// background starting the moment this module loads (i.e. at server boot,
+// well before any real call arrives), and the tool call itself only ever
+// reads that cache. A call only touches the network if it lands before the
+// very first warmup completes.
+const WARM_FETCH_TIMEOUT_MS = 25000;
+const WARM_MAX_ATTEMPTS = 5;
+const WARM_RETRY_DELAY_MS = 3000;
+const REWARM_INTERVAL_MS = 30 * 60 * 1000; // refresh periodically in case content rotates
+const CALL_WAIT_BUDGET_MS = 8500; // headroom under the 10s tool deadline
+const MAX_MATERIALS = 12;
+
+const MATERIALS_INDEX_URL =
+  process.env.STUDY_MATERIALS_INDEX_URL ||
+  "https://tool-box-2591eaa24fa3.herokuapp.com/study-materials";
 
 const encoding = getEncoding("o200k_base");
 const countTokens = (text) => encoding.encode(text).length;
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const STOPWORDS = new Set([
   "the", "a", "an", "of", "to", "and", "or", "in", "on", "is", "was", "were",
@@ -22,20 +40,15 @@ function tokenizeWords(text) {
   );
 }
 
-async function fetchText(url) {
+async function fetchWithTimeout(url, timeoutMs) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await fetch(url, { signal: controller.signal });
-    if (!res.ok) return "";
+    if (!res.ok) throw new Error(`${res.status}`);
     const contentType = res.headers.get("content-type") || "";
-    if (contentType.includes("application/json")) {
-      const json = await res.json();
-      return typeof json === "string" ? json : JSON.stringify(json);
-    }
-    return await res.text();
-  } catch {
-    return "";
+    if (contentType.includes("application/json")) return res.json();
+    return res.text();
   } finally {
     clearTimeout(timer);
   }
@@ -119,38 +132,68 @@ function selectPassages(candidatePassages, question) {
   return selected;
 }
 
-// Grader calls this with just a bare query and no document list, so unlike
-// plan_route's map service (identified per-call by map_id) the corpus here
-// must be self-sourced. SEARCH_SERVICE_BASE_URL is expected to expose
-// GET {base}/search?q=... returning either a JSON array of {title, url}
-// (or plain strings/documents) or raw text to pull passages from directly.
-async function fetchCorpusHits(query) {
-  if (!SEARCH_SERVICE_BASE_URL) return null;
-  const url = `${SEARCH_SERVICE_BASE_URL}/search?q=${encodeURIComponent(query)}`;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-  try {
-    const res = await fetch(url, { signal: controller.signal });
-    if (!res.ok) return null;
-    const contentType = res.headers.get("content-type") || "";
-    if (!contentType.includes("application/json")) return [await res.text()];
+// --- background warm cache -------------------------------------------------
 
-    const json = await res.json();
-    const items = Array.isArray(json) ? json : Array.isArray(json.results) ? json.results : null;
-    if (!items) return null;
+let documents = null; // [{id, title, url}, ...]
+const docText = new Map(); // url -> text
 
-    return items.slice(0, MAX_MATERIALS).map((item) => {
-      if (typeof item === "string") return item;
-      if (item && typeof item.text === "string") return item.text;
-      if (item && typeof item.url === "string") return { url: item.url };
-      return null;
-    });
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timer);
+async function fetchIndexWithRetry() {
+  for (let attempt = 1; attempt <= WARM_MAX_ATTEMPTS; attempt++) {
+    try {
+      const json = await fetchWithTimeout(MATERIALS_INDEX_URL, WARM_FETCH_TIMEOUT_MS);
+      if (Array.isArray(json.documents) && json.documents.length > 0) return json.documents;
+    } catch {
+      // fall through to retry
+    }
+    if (attempt < WARM_MAX_ATTEMPTS) await sleep(WARM_RETRY_DELAY_MS);
   }
+  return [];
 }
+
+async function fetchDocWithRetry(url, attempts = 3) {
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      const text = await fetchWithTimeout(url, WARM_FETCH_TIMEOUT_MS);
+      if (typeof text === "string" && text.length > 0) return text;
+    } catch {
+      // fall through to retry
+    }
+    if (attempt < attempts) await sleep(WARM_RETRY_DELAY_MS);
+  }
+  return "";
+}
+
+async function warmOnce() {
+  const docs = await fetchIndexWithRetry();
+  if (docs.length === 0) return false;
+
+  const toFetch = docs.slice(0, MAX_MATERIALS);
+  const results = await Promise.allSettled(toFetch.map((d) => fetchDocWithRetry(d.url)));
+  results.forEach((r, i) => {
+    if (r.status === "fulfilled" && r.value) docText.set(toFetch[i].url, r.value);
+  });
+
+  documents = toFetch;
+  return docText.size > 0;
+}
+
+let warmPromise = null;
+
+function startWarming() {
+  if (warmPromise) return warmPromise;
+  warmPromise = warmOnce().catch(() => false);
+  return warmPromise;
+}
+
+function scheduleRewarm() {
+  setTimeout(() => {
+    warmPromise = null;
+    startWarming().finally(scheduleRewarm);
+  }, REWARM_INTERVAL_MS).unref?.();
+}
+
+startWarming();
+scheduleRewarm();
 
 function register(server) {
   server.registerTool(
@@ -166,27 +209,21 @@ function register(server) {
       },
     },
     async ({ query }) => {
-      const hits = await fetchCorpusHits(query);
-      if (!hits) {
+      await Promise.race([startWarming(), sleep(CALL_WAIT_BUDGET_MS)]);
+
+      if (!documents || docText.size === 0) {
         return {
           content: [
-            {
-              type: "text",
-              text: "error: no study-material search service is configured (SEARCH_SERVICE_BASE_URL unset or unreachable)",
-            },
+            { type: "text", text: "error: study materials are still loading, try again shortly" },
           ],
           isError: true,
         };
       }
 
-      const urlsToFetch = hits.filter((h) => h && typeof h === "object" && h.url);
-      const fetchedTexts = await Promise.all(urlsToFetch.map((h) => fetchText(h.url)));
-      const inlineTexts = hits.filter((h) => typeof h === "string");
-
       const candidatePassages = [];
-      for (const text of [...inlineTexts, ...fetchedTexts]) {
-        if (!text) continue;
-        candidatePassages.push(...splitIntoPassages(text));
+      for (const doc of documents) {
+        const text = docText.get(doc.url);
+        if (text) candidatePassages.push(...splitIntoPassages(text));
       }
 
       if (candidatePassages.length === 0) {
