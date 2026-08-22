@@ -4,7 +4,7 @@ const helmet = require("helmet");
 const morgan = require("morgan");
 
 const routes = require("./routes");
-const { solve } = require("./controllers/adaptiveGatewayController");
+const { solve, reset } = require("./controllers/adaptiveGatewayController");
 const { kanCheongDeliveryDriver } = require("./controllers/kanCheongController");
 const { move: showdownMove, health: showdownHealth } = require("./controllers/showdownController");
 const ghostChainsRoutes = require("./routes/ghostChainsRoutes");
@@ -33,6 +33,8 @@ app.post("/adaptive-gateway/solve", solve);
 app.post("/adaptive-gateway/solve/", solve);
 app.post("/api/solve", solve);
 app.post("/api/solve/", solve);
+app.post("/reset", reset);
+app.get("/reset", reset);
 app.post("/kan-cheong-delivery-driver", kanCheongDeliveryDriver);
 app.use("/ghost-chains", ghostChainsRoutes);
 app.post("/move", showdownMove);

@@ -355,8 +355,29 @@ function isHeartbeatOk(h) {
   return false;
 }
 
+// In-memory heartbeat storage for stateful streaming / multi-request evaluation
+const inMemoryHeartbeats = [];
+
+function addHeartbeats(hbs) {
+  if (!Array.isArray(hbs)) return;
+  for (const h of hbs) {
+    if (h && typeof h === "object") {
+      inMemoryHeartbeats.push(h);
+    }
+  }
+}
+
+function getStoredHeartbeats() {
+  return inMemoryHeartbeats;
+}
+
+function resetHeartbeats() {
+  inMemoryHeartbeats.length = 0;
+}
+
 function computeSingleSlo(heartbeats, query = {}) {
-  if (!Array.isArray(heartbeats) || heartbeats.length === 0) {
+  const list = Array.isArray(heartbeats) ? heartbeats : inMemoryHeartbeats;
+  if (!Array.isArray(list) || list.length === 0) {
     return { availability: null, p95LatencyMs: null };
   }
 
@@ -392,10 +413,10 @@ function computeSingleSlo(heartbeats, query = {}) {
   const isQueryMs = Number.isFinite(since) && since > 1e11;
   const isQuerySec = Number.isFinite(since) && since > 0 && since < 1e11;
 
-  const filtered = heartbeats.filter((h) => {
+  const filtered = list.filter((h) => {
     if (!h || typeof h !== "object") return false;
 
-    // Service matching
+    // Service matching (case-insensitive)
     if (
       queryService !== null &&
       queryService !== "" &&
@@ -404,10 +425,15 @@ function computeSingleSlo(heartbeats, query = {}) {
     ) {
       const hService =
         h.service ?? h.serviceName ?? h.service_name ?? h.name ?? h.svc ?? null;
+      if (hService == null) return false;
+
       if (Array.isArray(queryService)) {
-        if (!queryService.map(String).includes(String(hService))) return false;
+        const lowerList = queryService.map((s) => String(s).trim().toLowerCase());
+        if (!lowerList.includes(String(hService).trim().toLowerCase())) return false;
       } else {
-        if (String(hService) !== String(queryService)) return false;
+        if (String(hService).trim().toLowerCase() !== String(queryService).trim().toLowerCase()) {
+          return false;
+        }
       }
     }
 
@@ -583,9 +609,15 @@ function extractPayload(req) {
     if (
       body.adaptInput ||
       body.adapt_input ||
+      body.adaptInputs ||
+      body.adapt_inputs ||
       body.heartbeats ||
+      body.heartbeat ||
+      body.heart_beats ||
       body.sloQuery ||
       body.slo_query ||
+      body.sloQueries ||
+      body.slo_queries ||
       body.action ||
       body.user
     ) {
@@ -600,23 +632,60 @@ const solve = (req, res, next) => {
   try {
     const decoded = extractPayload(req);
 
-    const response = {};
-
-    if ("adaptInput" in decoded && decoded.adaptInput != null) {
-      response.adaptOutput = transformAdaptInput(decoded.adaptInput, decoded);
-    } else if ("adapt_input" in decoded && decoded.adapt_input != null) {
-      response.adaptOutput = transformAdaptInput(decoded.adapt_input, decoded);
-    } else if (decoded.user || decoded.action || (decoded.id && decoded.name)) {
-      response.adaptOutput = transformAdaptInput(decoded, decoded);
+    if (decoded.reset === true || decoded.clear === true) {
+      resetHeartbeats();
     }
 
-    if ("heartbeats" in decoded && decoded.heartbeats != null) {
-      response.sloOutput = computeSlo(
-        decoded.heartbeats,
-        decoded.sloQuery ?? decoded.slo_query
-      );
-    } else if ("sloQuery" in decoded || "slo_query" in decoded) {
-      response.sloOutput = { availability: null, p95LatencyMs: null };
+    const response = {};
+
+    const hasAdaptInput =
+      ("adaptInput" in decoded && decoded.adaptInput != null) ||
+      ("adapt_input" in decoded && decoded.adapt_input != null) ||
+      ("adaptInputs" in decoded && decoded.adaptInputs != null) ||
+      ("adapt_inputs" in decoded && decoded.adapt_inputs != null) ||
+      Boolean(decoded.user || decoded.action || (decoded.id && decoded.name));
+
+    if (hasAdaptInput) {
+      const input =
+        decoded.adaptInput ??
+        decoded.adapt_input ??
+        decoded.adaptInputs ??
+        decoded.adapt_inputs ??
+        decoded;
+      response.adaptOutput = transformAdaptInput(input, decoded);
+    }
+
+    const hasHeartbeats =
+      ("heartbeats" in decoded && Array.isArray(decoded.heartbeats)) ||
+      ("heartbeat" in decoded && Array.isArray(decoded.heartbeat)) ||
+      ("heart_beats" in decoded && Array.isArray(decoded.heart_beats));
+
+    const hasSloQuery =
+      ("sloQuery" in decoded && decoded.sloQuery != null) ||
+      ("slo_query" in decoded && decoded.slo_query != null) ||
+      ("sloQueries" in decoded && decoded.sloQueries != null) ||
+      ("slo_queries" in decoded && decoded.slo_queries != null);
+
+    if (hasHeartbeats) {
+      const hbs =
+        decoded.heartbeats ?? decoded.heartbeat ?? decoded.heart_beats;
+      addHeartbeats(hbs);
+    }
+
+    if (hasSloQuery) {
+      const query =
+        decoded.sloQuery ??
+        decoded.slo_query ??
+        decoded.sloQueries ??
+        decoded.slo_queries;
+      const hbs = hasHeartbeats
+        ? (decoded.heartbeats ?? decoded.heartbeat ?? decoded.heart_beats)
+        : getStoredHeartbeats();
+      response.sloOutput = computeSlo(hbs, query);
+    } else if (hasHeartbeats) {
+      const hbs =
+        decoded.heartbeats ?? decoded.heartbeat ?? decoded.heart_beats;
+      response.sloOutput = computeSlo(hbs, null);
     }
 
     if (!("adaptOutput" in response) && !("sloOutput" in response)) {
@@ -631,11 +700,20 @@ const solve = (req, res, next) => {
   }
 };
 
+const reset = (req, res) => {
+  resetHeartbeats();
+  return res.status(200).json({ reset: true });
+};
+
 module.exports = {
   solve,
+  reset,
   transformAdaptInput,
   computeSlo,
   decodeBase64String,
   extractPayload,
   normalizePriority,
+  addHeartbeats,
+  getStoredHeartbeats,
+  resetHeartbeats,
 };
