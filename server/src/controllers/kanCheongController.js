@@ -1,7 +1,5 @@
 const MinHeap = require("../utils/minHeap");
 
-const _EPS = 1e-9;
-
 function parseIso(ts) {
   return new Date(ts).getTime() / 1000;
 }
@@ -11,187 +9,143 @@ function epochToIso(epoch) {
   return new Date(rounded * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
-// Port of Python's bisect.bisect_right
-function bisectRight(arr, val) {
-  let lo = 0;
-  let hi = arr.length;
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1;
-    if (arr[mid] <= val) lo = mid + 1;
-    else hi = mid;
-  }
-  return lo;
-}
-
-function traverseEdge(entryTime, baseDuration, obstructions) {
-  if (baseDuration <= 0) return entryTime;
-
-  let remaining = baseDuration;
-  let t = entryTime;
-  const starts = obstructions.map((o) => o[0]);
-  const n = obstructions.length;
-
-  while (remaining > _EPS) {
-    let activeFactor = 1.0;
-    let activeEnd = null;
-
-    for (const [s, e, f] of obstructions) {
-      if (s <= t && t < e) {
-        if (activeEnd === null || f < activeFactor) {
-          activeFactor = f;
-          activeEnd = e;
-        } else if (e < activeEnd && f <= activeFactor) {
-          activeEnd = e;
-        }
-      }
-    }
-
-    let segmentEnd, factor;
-    if (activeEnd !== null) {
-      segmentEnd = activeEnd;
-      factor = activeFactor;
-    } else {
-      const idx = bisectRight(starts, t);
-      segmentEnd = idx < n ? obstructions[idx][0] : null;
-      factor = 1.0;
-    }
-
-    if (factor <= 0.0) return null;
-
-    const segmentLength = segmentEnd !== null ? segmentEnd - t : null;
-    const timeNeeded = remaining / factor;
-
-    if (segmentLength === null || timeNeeded <= segmentLength + _EPS) {
-      t = t + timeNeeded;
-      remaining = 0.0;
-    } else {
-      remaining -= segmentLength * factor;
-      t = segmentEnd;
+function addDirection(adj, fromKey, toKey, eid, baseDur, obstructions) {
+  const obsList = [];
+  for (const ob of obstructions) {
+    const obFrom = JSON.stringify(ob.edge.from);
+    const obTo = JSON.stringify(ob.edge.to);
+    if (ob.edge_id === eid && obFrom === fromKey && obTo === toKey) {
+      obsList.push([parseIso(ob.start_time), parseIso(ob.end_time), parseFloat(ob.speed_factor)]);
     }
   }
-
-  return t;
+  obsList.sort((a, b) => a[0] - b[0]);
+  if (!adj.has(fromKey)) adj.set(fromKey, []);
+  adj.get(fromKey).push([eid, toKey, baseDur, obsList]);
 }
 
 function buildGraph(nodes, edges, obstructions) {
   const adj = new Map();
-
-  for (const node of nodes) {
-    const key = JSON.stringify(node);
+  for (const n of nodes) {
+    const key = JSON.stringify(n);
     if (!adj.has(key)) adj.set(key, []);
   }
-
-  const edgeBase = new Map();
-
   for (const e of edges) {
     const n1 = JSON.stringify(e.node1);
     const n2 = JSON.stringify(e.node2);
     const { edge_id: eid, base_duration_sec: dur } = e;
-    if (!adj.has(n1)) adj.set(n1, []);
-    if (!adj.has(n2)) adj.set(n2, []);
-    adj.get(n1).push([eid, n2]);
-    adj.get(n2).push([eid, n1]);
-    edgeBase.set(eid, dur);
+    addDirection(adj, n1, n2, eid, dur, obstructions);
+    addDirection(adj, n2, n1, eid, dur, obstructions);
   }
+  return adj;
+}
 
-  const obsMap = new Map();
+function traverse(entryTime, baseDuration, obsList) {
+  let remaining = baseDuration;
+  let t = entryTime;
+  if (remaining === 0) return t;
 
-  for (const o of obstructions) {
-    const { edge_id: eid, edge, start_time, end_time, speed_factor } = o;
-    const frm = JSON.stringify(edge.from);
-    const to = JSON.stringify(edge.to);
-    const key = `${eid}|${frm}|${to}`;
-    if (!obsMap.has(key)) obsMap.set(key, []);
-    obsMap.get(key).push([parseIso(start_time), parseIso(end_time), parseFloat(speed_factor)]);
+  while (true) {
+    let activeFactor = 1.0;
+    let activeEnd = null;
+
+    for (const [s, e, factor] of obsList) {
+      if (s <= t && t < e) {
+        if (activeEnd === null || factor < activeFactor) {
+          activeFactor = factor;
+          activeEnd = activeEnd === null ? e : Math.min(activeEnd, e);
+        }
+      }
+    }
+
+    let regimeEnd, factor;
+    if (activeEnd !== null) {
+      regimeEnd = activeEnd;
+      factor = activeFactor;
+    } else {
+      factor = 1.0;
+      let minStart = null;
+      for (const [s] of obsList) {
+        if (s > t && (minStart === null || s < minStart)) minStart = s;
+      }
+      regimeEnd = minStart;
+    }
+
+    if (factor === 0) return null;
+
+    if (regimeEnd === null) {
+      return t + remaining / factor;
+    } else {
+      const available = regimeEnd - t;
+      const progressPossible = available * factor;
+      if (progressPossible >= remaining) {
+        return t + remaining / factor;
+      } else {
+        remaining -= progressPossible;
+        t = regimeEnd;
+      }
+    }
   }
-
-  for (const list of obsMap.values()) {
-    list.sort((a, b) => a[0] - b[0]);
-  }
-
-  return { adj, edgeBase, obsMap };
 }
 
 function solveCase(caseData) {
   const startCoord = JSON.stringify(caseData.start_coordinate);
   const endCoord = JSON.stringify(caseData.end_coordinate);
   const startEpoch = parseIso(caseData.start_time);
+  const obstructions = caseData.obstructions || [];
 
-  const { adj, edgeBase, obsMap } = buildGraph(
-    caseData.nodes || [],
-    caseData.edges || [],
-    caseData.obstructions || []
-  );
+  const adj = buildGraph(caseData.nodes || [], caseData.edges || [], obstructions);
 
   if (startCoord === endCoord) {
     return { total_duration_sec: 0, arrival_time: epochToIso(startEpoch), path: [] };
   }
 
-  const allEnds = [];
-  for (const list of obsMap.values()) {
-    for (const [, e] of list) allEnds.push(e);
+  let cutoff = startEpoch;
+  for (const ob of obstructions) {
+    const e = parseIso(ob.end_time);
+    if (e > cutoff) cutoff = e;
   }
-  const cutoff = allEnds.length > 0
-    ? allEnds.reduce((a, b) => (b > a ? b : a), -Infinity)
-    : startEpoch;
 
-  const prev = new Map();       // `${node}|${time}` -> { prevNode, prevTime, eid }
-  const processed = new Map();  // node -> Set<time>
-  const settledLate = new Set();
+  const timeKey = (t) => Math.round((t - startEpoch) * 1e6) / 1e6;
+
+  const expandedStates = new Map();
+  const settledNodes = new Set();
   const heap = new MinHeap();
-  heap.push([startEpoch, startCoord]);
-  let arrivalEpoch = null;
+  let counter = 0;
+  heap.push([startEpoch, counter, startCoord, []]);
+
+  const MAX_ITER = 2_000_000;
+  let iterations = 0;
 
   while (heap.size > 0) {
-    const [t, node] = heap.pop();
+    if (++iterations > MAX_ITER) break;
 
-    if (settledLate.has(node)) continue;
-    if (processed.get(node)?.has(t)) continue;
-    if (!processed.has(node)) processed.set(node, new Set());
-    processed.get(node).add(t);
+    const [t, , node, path] = heap.pop();
 
     if (node === endCoord) {
-      arrivalEpoch = t;
-      break;
+      const duration = Math.round((t - startEpoch) * 1e6) / 1e6;
+      const durationOut = duration === Math.floor(duration) ? Math.floor(duration) : duration;
+      return { total_duration_sec: durationOut, arrival_time: epochToIso(t), path };
     }
 
-    for (const [eid, neighbor] of (adj.get(node) || [])) {
-      const baseDur = edgeBase.get(eid);
-      const obsList = obsMap.get(`${eid}|${node}|${neighbor}`) || [];
-      const arrival = traverseEdge(t, baseDur, obsList);
+    if (settledNodes.has(node)) continue;
+
+    const tk = timeKey(t);
+    if (!expandedStates.has(node)) expandedStates.set(node, new Set());
+    const seen = expandedStates.get(node);
+    if (seen.has(tk)) continue;
+    seen.add(tk);
+
+    if (t > cutoff) settledNodes.add(node);
+
+    for (const [eid, neighbor, baseDur, obsList] of (adj.get(node) || [])) {
+      const arrival = traverse(t, baseDur, obsList);
       if (arrival === null) continue;
-      if (processed.get(neighbor)?.has(arrival)) continue;
-      const prevKey = `${neighbor}|${arrival}`;
-      if (!prev.has(prevKey)) {
-        prev.set(prevKey, { prevNode: node, prevTime: t, eid });
-      }
-      heap.push([arrival, neighbor]);
+      counter++;
+      heap.push([arrival, counter, neighbor, path.concat(eid)]);
     }
-
-    if (t > cutoff + _EPS) settledLate.add(node);
   }
 
-  if (arrivalEpoch === null) {
-    return { total_duration_sec: null, arrival_time: null, path: [] };
-  }
-
-  // Reconstruct path by walking back through (node, time) labels
-  const pathEdges = [];
-  let curNode = endCoord;
-  let curT = arrivalEpoch;
-  while (!(curNode === startCoord && curT === startEpoch)) {
-    const { prevNode, prevTime, eid } = prev.get(`${curNode}|${curT}`);
-    pathEdges.push(eid);
-    curNode = prevNode;
-    curT = prevTime;
-  }
-  pathEdges.reverse();
-
-  return {
-    total_duration_sec: Math.round(arrivalEpoch - startEpoch),
-    arrival_time: epochToIso(arrivalEpoch),
-    path: pathEdges,
-  };
+  return { total_duration_sec: null, arrival_time: null, path: [] };
 }
 
 const kanCheongDeliveryDriver = (req, res, next) => {
